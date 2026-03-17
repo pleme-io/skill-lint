@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The full skill-map.yaml structure.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillMap {
     pub version: Option<String>,
@@ -15,7 +15,7 @@ pub struct SkillMap {
 }
 
 /// A single skill entry in the map.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillEntry {
     pub description: String,
@@ -30,7 +30,7 @@ pub struct SkillEntry {
 }
 
 /// YAML frontmatter parsed from a SKILL.md file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 pub struct SkillFrontmatter {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -40,7 +40,7 @@ pub struct SkillFrontmatter {
     pub metadata: Option<SkillMetadata>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 pub struct SkillMetadata {
     pub version: Option<String>,
     pub last_verified: Option<String>,
@@ -74,10 +74,7 @@ mod tests {
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name.as_deref(), Some("test-skill"));
         assert_eq!(fm.description.as_deref(), Some("A test skill"));
-        assert_eq!(
-            fm.metadata.as_ref().unwrap().version.as_deref(),
-            Some("1.0.0")
-        );
+        assert_eq!(fm.metadata.as_ref().unwrap().version.as_deref(), Some("1.0.0"));
     }
 
     #[test]
@@ -111,5 +108,29 @@ mod tests {
         let map: SkillMap = serde_yaml::from_str(yaml).unwrap();
         assert!(map.skills.is_empty());
         assert!(map.version.is_none());
+    }
+
+    #[test]
+    fn skill_map_serialize_roundtrip() {
+        let mut map = SkillMap::default();
+        map.version = Some("1.0.0".into());
+        map.skills.insert("test".into(), SkillEntry {
+            description: "A test".into(),
+            domain: "meta".into(),
+            repo: "test-repo".into(),
+            concerns: vec!["testing".into()],
+            references: vec![],
+            anti_overlap: vec![],
+        });
+        let yaml = serde_yaml::to_string(&map).unwrap();
+        let map2: SkillMap = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(map, map2);
+    }
+
+    #[test]
+    fn frontmatter_default() {
+        let fm = SkillFrontmatter::default();
+        assert!(fm.name.is_none());
+        assert!(fm.metadata.is_none());
     }
 }
