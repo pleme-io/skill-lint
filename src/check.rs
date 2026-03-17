@@ -388,16 +388,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
 ///
 /// Returns an error if the directory or map can't be read.
 pub fn check_path(skills_dir: &Path) -> anyhow::Result<Report> {
-    check_all(&FsSource { skills_dir }, &CheckConfig::default())
-}
-
-/// Convenience: configured checks, filesystem source.
-///
-/// # Errors
-///
-/// Returns an error if the directory or map can't be read.
-pub fn check_path_with_config(skills_dir: &Path, config: &CheckConfig) -> anyhow::Result<Report> {
-    check_all(&FsSource { skills_dir }, config)
+    check_all(&FsSource { skills_dir, map_dir_override: None }, &CheckConfig::default())
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -406,6 +397,11 @@ pub fn check_path_with_config(skills_dir: &Path, config: &CheckConfig) -> anyhow
 
 pub struct FsSource<'a> {
     pub skills_dir: &'a Path,
+    /// Override for skill-map.d/ location. If None, searches:
+    /// 1. {skills_dir}/skill-map.d/
+    /// 2. {skills_dir}/../skill-map.d/
+    /// 3. {skills_dir}/skill-map.yaml (legacy)
+    pub map_dir_override: Option<&'a Path>,
 }
 
 impl FsSource<'_> {
@@ -458,18 +454,31 @@ impl FsSource<'_> {
 
 impl SkillSource for FsSource<'_> {
     fn skill_map(&self) -> anyhow::Result<SkillMap> {
-        let map_dir = self.skills_dir.join("skill-map.d");
+        // 1. Explicit override
+        if let Some(dir) = self.map_dir_override {
+            anyhow::ensure!(dir.is_dir(), "map-dir {} does not exist", dir.display());
+            return self.load_split_map(dir);
+        }
 
-        // New format: skill-map.d/ with per-domain files
+        // 2. skill-map.d/ inside skills dir
+        let map_dir = self.skills_dir.join("skill-map.d");
         if map_dir.is_dir() {
             return self.load_split_map(&map_dir);
         }
 
-        // Legacy format: single skill-map.yaml
+        // 3. skill-map.d/ as sibling of skills dir
+        if let Some(parent) = self.skills_dir.parent() {
+            let sibling = parent.join("skill-map.d");
+            if sibling.is_dir() {
+                return self.load_split_map(&sibling);
+            }
+        }
+
+        // 4. Legacy: single skill-map.yaml
         let path = self.skills_dir.join("skill-map.yaml");
         anyhow::ensure!(
             path.exists(),
-            "neither skill-map.d/ nor skill-map.yaml found in {}",
+            "skill-map.d/ or skill-map.yaml not found for {}",
             self.skills_dir.display()
         );
         let content = fs::read_to_string(&path)?;

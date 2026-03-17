@@ -17,9 +17,14 @@ struct Cli {
 enum Command {
     /// Run checks: sync, frontmatter, map integrity, version.
     Check {
-        /// Path to the skills directory (contains skill subdirs + skill-map.yaml).
+        /// Path to the skills directory (contains skill subdirs).
         #[arg(long, default_value = ".")]
         skills_dir: PathBuf,
+
+        /// Path to skill-map.d/ directory. Defaults to {skills_dir}/skill-map.d,
+        /// then {skills_dir}/../skill-map.d, then falls back to skill-map.yaml.
+        #[arg(long)]
+        map_dir: Option<PathBuf>,
 
         /// Skip version check.
         #[arg(long)]
@@ -53,6 +58,7 @@ fn main() -> Result<()> {
             skip_sync,
             skip_frontmatter,
             skip_map_integrity,
+            map_dir,
             max_age_days,
         } => {
             let config = CheckConfig {
@@ -65,7 +71,11 @@ fn main() -> Result<()> {
                 today: None,
             };
 
-            let report = check::check_path_with_config(&skills_dir, &config)
+            let source = check::FsSource {
+                skills_dir: &skills_dir,
+                map_dir_override: map_dir.as_deref(),
+            };
+            let report = check::check_all(&source, &config)
                 .with_context(|| format!("checking {}", skills_dir.display()))?;
 
             if report.is_ok() {
