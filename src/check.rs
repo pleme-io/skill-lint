@@ -67,6 +67,10 @@ pub struct CheckConfig {
     pub frontmatter: bool,
     pub map_integrity: bool,
     pub duplicate_concerns: bool,
+    /// Staleness threshold in days. `None` disables the check.
+    pub max_age_days: Option<u32>,
+    /// Override "today" for deterministic staleness testing (YYYY-MM-DD).
+    pub today: Option<String>,
 }
 
 impl Default for CheckConfig {
@@ -77,6 +81,8 @@ impl Default for CheckConfig {
             frontmatter: true,
             map_integrity: true,
             duplicate_concerns: true,
+            max_age_days: None,
+            today: None,
         }
     }
 }
@@ -248,6 +254,57 @@ impl Checker for MapIntegrityChecker {
     }
 }
 
+pub struct StalenessChecker {
+    pub max_days: u32,
+    pub today: String,
+}
+
+impl StalenessChecker {
+    fn days_since(today: &str, date: &str) -> Option<i64> {
+        // Simple YYYY-MM-DD date diff (no chrono dependency)
+        let parse = |s: &str| -> Option<(i64, i64, i64)> {
+            let parts: Vec<&str> = s.split('-').collect();
+            if parts.len() != 3 { return None; }
+            Some((parts[0].parse().ok()?, parts[1].parse().ok()?, parts[2].parse().ok()?))
+        };
+        let (ty, tm, td) = parse(today)?;
+        let (dy, dm, dd) = parse(date)?;
+        // Approximate: good enough for staleness thresholds
+        Some((ty - dy) * 365 + (tm - dm) * 30 + (td - dd))
+    }
+}
+
+impl Checker for StalenessChecker {
+    fn kind(&self) -> CheckKind { CheckKind::Staleness }
+    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
+        for name in &ctx.dir_names {
+            let content = match ctx.contents.get(name) {
+                Some(c) => c,
+                None => continue,
+            };
+            let fm = match model::parse_frontmatter(content) {
+                Ok(fm) => fm,
+                Err(_) => continue,
+            };
+            let last_verified = fm.metadata
+                .as_ref()
+                .and_then(|m| m.last_verified.as_deref());
+            if let Some(date) = last_verified {
+                if let Some(age) = Self::days_since(&self.today, date) {
+                    if age > i64::from(self.max_days) {
+                        errors.push(LintError::Stale {
+                            kind: CheckKind::Staleness,
+                            skill: name.clone(),
+                            last_verified: date.to_owned(),
+                            max_days: self.max_days,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Report
 // ═══════════════════════════════════════════════════════════════════
@@ -285,12 +342,29 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
     let ctx = CheckContext::from_source(source)?;
     let mut report = Report::new(ctx.dir_names.len());
 
-    let checkers: Vec<Box<dyn Checker>> = vec![
+    let mut checkers: Vec<Box<dyn Checker>> = vec![
         Box::new(VersionChecker),
         Box::new(SyncChecker),
         Box::new(FrontmatterChecker),
         Box::new(MapIntegrityChecker),
     ];
+
+    if let Some(max_days) = config.max_age_days {
+        let today = config.today.clone().unwrap_or_else(|| {
+            // Default to current date
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let days = now / 86400;
+            let y = 1970 + days / 365;
+            let rem = days % 365;
+            let m = rem / 30 + 1;
+            let d = rem % 30 + 1;
+            format!("{y}-{m:02}-{d:02}")
+        });
+        checkers.push(Box::new(StalenessChecker { max_days, today }));
+    }
 
     for checker in &checkers {
         let enabled = match checker.kind() {
@@ -298,6 +372,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             CheckKind::Sync => config.sync,
             CheckKind::Frontmatter => config.frontmatter,
             CheckKind::MapIntegrity => config.map_integrity || config.duplicate_concerns,
+            CheckKind::Staleness => true, // already gated by max_age_days
         };
         if enabled {
             checker.check(&ctx, &mut report.errors);
@@ -333,10 +408,70 @@ pub struct FsSource<'a> {
     pub skills_dir: &'a Path,
 }
 
+impl FsSource<'_> {
+    fn load_split_map(&self, map_dir: &Path) -> anyhow::Result<SkillMap> {
+        use crate::model::SkillMapConfig;
+
+        let config_path = map_dir.join("config.yaml");
+        let config: SkillMapConfig = if config_path.exists() {
+            serde_yaml::from_str(&fs::read_to_string(&config_path)?)?
+        } else {
+            SkillMapConfig::default()
+        };
+
+        let mut skills = BTreeMap::new();
+        let mut domains = BTreeMap::new();
+
+        let mut paths: Vec<_> = fs::read_dir(map_dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|e| e == "yaml")
+                    && p.file_stem().is_some_and(|s| s != "config")
+            })
+            .collect();
+        paths.sort();
+
+        for path in paths {
+            let domain = path.file_stem().and_then(|s| s.to_str())
+                .unwrap_or("unknown").to_owned();
+            let content = fs::read_to_string(&path)?;
+            let domain_skills: BTreeMap<String, SkillEntry> =
+                serde_yaml::from_str(&content)?;
+
+            let mut members = Vec::new();
+            for (name, entry) in domain_skills {
+                members.push(name.clone());
+                skills.insert(name, entry);
+            }
+            domains.insert(domain, members);
+        }
+
+        Ok(SkillMap {
+            version: config.version,
+            last_modified: config.last_modified,
+            domains,
+            skills,
+        })
+    }
+}
+
 impl SkillSource for FsSource<'_> {
     fn skill_map(&self) -> anyhow::Result<SkillMap> {
+        let map_dir = self.skills_dir.join("skill-map.d");
+
+        // New format: skill-map.d/ with per-domain files
+        if map_dir.is_dir() {
+            return self.load_split_map(&map_dir);
+        }
+
+        // Legacy format: single skill-map.yaml
         let path = self.skills_dir.join("skill-map.yaml");
-        anyhow::ensure!(path.exists(), "skill-map.yaml not found in {}", self.skills_dir.display());
+        anyhow::ensure!(
+            path.exists(),
+            "neither skill-map.d/ nor skill-map.yaml found in {}",
+            self.skills_dir.display()
+        );
         let content = fs::read_to_string(&path)?;
         Ok(serde_yaml::from_str(&content)?)
     }
@@ -399,7 +534,7 @@ pub mod testing {
                 repo: "test".into(),
                 concerns: vec![],
                 references: vec![],
-                anti_overlap: vec![],
+                watches: vec![],
             });
             self.map.domains.entry(domain.into()).or_default().push(name.into());
             self
@@ -787,5 +922,88 @@ mod tests {
         let mut errors = Vec::new();
         SyncChecker.check(&ctx, &mut errors);
         assert!(errors.iter().any(|e| matches!(e, LintError::MissingMapEntry { .. })));
+    }
+
+    // ─── Staleness checks ────────────────────────────────────────
+
+    #[test]
+    fn stale_skill_detected() {
+        let source = MockSource::new()
+            .with_skill("old", "meta", "name: old\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2025-01-01\"");
+        let config = CheckConfig {
+            max_age_days: Some(90),
+            today: Some("2026-03-17".into()),
+            ..Default::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        assert!(report.errors.iter().any(|e| matches!(e, LintError::Stale { skill, .. } if skill == "old")));
+    }
+
+    #[test]
+    fn fresh_skill_not_stale() {
+        let source = MockSource::new()
+            .with_skill("fresh", "meta", "name: fresh\ndescription: Fresh\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-15\"");
+        let config = CheckConfig {
+            max_age_days: Some(90),
+            today: Some("2026-03-17".into()),
+            ..Default::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        assert_eq!(report.errors_of(CheckKind::Staleness).len(), 0);
+    }
+
+    #[test]
+    fn staleness_disabled_by_default() {
+        let source = MockSource::new()
+            .with_skill("old", "meta", "name: old\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2020-01-01\"");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::Staleness).len(), 0);
+    }
+
+    #[test]
+    fn staleness_checker_deterministic_with_fixed_today() {
+        let source = MockSource::new()
+            .with_skill("a", "meta", "name: a\ndescription: A\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2025-06-01\"");
+        let config = CheckConfig {
+            max_age_days: Some(90),
+            today: Some("2026-03-17".into()),
+            ..Default::default()
+        };
+        let r1 = check_all(&source, &config).unwrap();
+        let r2 = check_all(&source, &config).unwrap();
+        assert_eq!(r1.errors.len(), r2.errors.len());
+    }
+
+    #[test]
+    fn days_since_calculation() {
+        assert_eq!(StalenessChecker::days_since("2026-03-17", "2026-03-17"), Some(0));
+        assert_eq!(StalenessChecker::days_since("2026-03-17", "2026-03-07"), Some(10));
+        assert_eq!(StalenessChecker::days_since("2026-03-17", "2025-03-17"), Some(365));
+        assert!(StalenessChecker::days_since("bad", "2026-03-17").is_none());
+    }
+
+    // ─── Split map filesystem integration ────────────────────────
+
+    #[test]
+    fn split_map_filesystem_works() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+
+        // Create skill directory
+        let skill_dir = dir.path().join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), format!("---\n{}\n---\n\n# Body\n", valid_fm("test-skill"))).unwrap();
+
+        // Create skill-map.d/ with config + domain file
+        let map_dir = dir.path().join("skill-map.d");
+        fs::create_dir_all(&map_dir).unwrap();
+        fs::write(map_dir.join("config.yaml"), "version: \"2.0.0\"\nlastModified: \"2026-03-17\"\n").unwrap();
+        fs::write(map_dir.join("meta.yaml"),
+            "test-skill:\n  description: A test\n  domain: meta\n  repo: test\n  concerns: [testing]\n  references: []\n"
+        ).unwrap();
+
+        let report = check_path(dir.path()).unwrap();
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        assert_eq!(report.skills_checked, 1);
     }
 }

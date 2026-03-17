@@ -36,6 +36,10 @@ enum Command {
         /// Skip map integrity check.
         #[arg(long)]
         skip_map_integrity: bool,
+
+        /// Flag skills not verified within this many days as stale.
+        #[arg(long)]
+        max_age_days: Option<u32>,
     },
 }
 
@@ -49,6 +53,7 @@ fn main() -> Result<()> {
             skip_sync,
             skip_frontmatter,
             skip_map_integrity,
+            max_age_days,
         } => {
             let config = CheckConfig {
                 version: !skip_version,
@@ -56,6 +61,8 @@ fn main() -> Result<()> {
                 frontmatter: !skip_frontmatter,
                 map_integrity: !skip_map_integrity,
                 duplicate_concerns: !skip_map_integrity,
+                max_age_days,
+                today: None,
             };
 
             let report = check::check_path_with_config(&skills_dir, &config)

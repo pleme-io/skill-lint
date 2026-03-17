@@ -9,6 +9,7 @@ pub enum CheckKind {
     Sync,
     Frontmatter,
     MapIntegrity,
+    Staleness,
 }
 
 impl fmt::Display for CheckKind {
@@ -18,6 +19,7 @@ impl fmt::Display for CheckKind {
             Self::Sync => write!(f, "sync"),
             Self::Frontmatter => write!(f, "frontmatter"),
             Self::MapIntegrity => write!(f, "map-integrity"),
+            Self::Staleness => write!(f, "staleness"),
         }
     }
 }
@@ -83,6 +85,14 @@ pub enum LintError {
 
     #[error("[{kind}] skill-map.yaml missing 'lastModified' field")]
     MissingLastModified { kind: CheckKind },
+
+    #[error("[{kind}] skill '{skill}' last verified {last_verified}, exceeds {max_days} day threshold")]
+    Stale {
+        kind: CheckKind,
+        skill: String,
+        last_verified: String,
+        max_days: u32,
+    },
 }
 
 impl LintError {
@@ -99,7 +109,8 @@ impl LintError {
             | Self::DomainMismatch { kind, .. }
             | Self::DuplicateConcern { kind, .. }
             | Self::MissingVersion { kind }
-            | Self::MissingLastModified { kind } => *kind,
+            | Self::MissingLastModified { kind }
+            | Self::Stale { kind, .. } => *kind,
         }
     }
 }

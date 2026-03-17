@@ -15,6 +15,9 @@ pub struct SkillMap {
 }
 
 /// A single skill entry in the map.
+///
+/// The `domain` field is validated against the filename when loaded
+/// from `skill-map.d/{domain}.yaml`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillEntry {
@@ -25,8 +28,18 @@ pub struct SkillEntry {
     pub concerns: Vec<String>,
     #[serde(default)]
     pub references: Vec<String>,
+    /// File paths this skill depends on. When these change, the skill
+    /// should be reviewed. Paths are relative to the workspace root.
     #[serde(default)]
-    pub anti_overlap: Vec<String>,
+    pub watches: Vec<String>,
+}
+
+/// Root config for the skill map (`skill-map.d/config.yaml`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMapConfig {
+    pub version: Option<String>,
+    pub last_modified: Option<String>,
 }
 
 /// YAML frontmatter parsed from a SKILL.md file.
@@ -120,7 +133,7 @@ mod tests {
             repo: "test-repo".into(),
             concerns: vec!["testing".into()],
             references: vec![],
-            anti_overlap: vec![],
+            watches: vec![],
         });
         let yaml = serde_yaml::to_string(&map).unwrap();
         let map2: SkillMap = serde_yaml::from_str(&yaml).unwrap();
