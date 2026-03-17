@@ -305,6 +305,45 @@ impl Checker for StalenessChecker {
     }
 }
 
+/// Checks if any referenced skill was verified more recently than the
+/// referencing skill. If so, the referencing skill may need review.
+/// Pure data check — no filesystem access, no workspace root needed.
+pub struct ReferencesFreshnessChecker;
+
+impl Checker for ReferencesFreshnessChecker {
+    fn kind(&self) -> CheckKind { CheckKind::Watches }
+    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
+        // Build a map of skill name → last_verified date
+        let mut dates: BTreeMap<String, String> = BTreeMap::new();
+        for name in &ctx.dir_names {
+            if let Some(content) = ctx.contents.get(name) {
+                if let Ok(fm) = model::parse_frontmatter(content) {
+                    if let Some(date) = fm.metadata.and_then(|m| m.last_verified) {
+                        dates.insert(name.clone(), date);
+                    }
+                }
+            }
+        }
+
+        // For each skill, check if any reference has a newer last_verified
+        for (name, entry) in &ctx.map.skills {
+            let Some(skill_date) = dates.get(name) else { continue };
+            for reference in &entry.references {
+                let Some(ref_date) = dates.get(reference) else { continue };
+                if ref_date > skill_date {
+                    errors.push(LintError::ReferenceNewer {
+                        kind: CheckKind::Watches,
+                        skill: name.clone(),
+                        skill_date: skill_date.clone(),
+                        reference: reference.clone(),
+                        ref_date: ref_date.clone(),
+                    });
+                }
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Report
 // ═══════════════════════════════════════════════════════════════════
@@ -366,6 +405,9 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
         checkers.push(Box::new(StalenessChecker { max_days, today }));
     }
 
+    // Always check references freshness — pure data, no config needed
+    checkers.push(Box::new(ReferencesFreshnessChecker));
+
     for checker in &checkers {
         let enabled = match checker.kind() {
             CheckKind::Version => config.version,
@@ -373,6 +415,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             CheckKind::Frontmatter => config.frontmatter,
             CheckKind::MapIntegrity => config.map_integrity || config.duplicate_concerns,
             CheckKind::Staleness => true, // already gated by max_age_days
+            CheckKind::Watches => true,  // always on — pure data check
         };
         if enabled {
             checker.check(&ctx, &mut report.errors);
@@ -543,7 +586,6 @@ pub mod testing {
                 repo: "test".into(),
                 concerns: vec![],
                 references: vec![],
-                watches: vec![],
             });
             self.map.domains.entry(domain.into()).or_default().push(name.into());
             self
@@ -1014,5 +1056,75 @@ mod tests {
         let report = check_path(dir.path()).unwrap();
         assert!(report.is_ok(), "errors: {:?}", report.errors);
         assert_eq!(report.skills_checked, 1);
+    }
+
+    // ─── References freshness checks ─────────────────────────────
+
+    #[test]
+    fn reference_newer_detected() {
+        let source = MockSource::new()
+            .with_skill("old-skill", "meta",
+                "name: old-skill\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
+            .with_skill("new-skill", "meta",
+                "name: new-skill\ndescription: New\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-15\"")
+            .with_reference("old-skill", "new-skill");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert!(report.errors.iter().any(|e| matches!(e,
+            LintError::ReferenceNewer { skill, reference, .. }
+            if skill == "old-skill" && reference == "new-skill"
+        )));
+    }
+
+    #[test]
+    fn reference_older_no_error() {
+        let source = MockSource::new()
+            .with_skill("new-skill", "meta",
+                "name: new-skill\ndescription: New\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-15\"")
+            .with_skill("old-skill", "meta",
+                "name: old-skill\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
+            .with_reference("new-skill", "old-skill");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::Watches).len(), 0);
+    }
+
+    #[test]
+    fn reference_same_date_no_error() {
+        let source = MockSource::new()
+            .with_skill("a", "meta",
+                "name: a\ndescription: A\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-17\"")
+            .with_skill("b", "meta",
+                "name: b\ndescription: B\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-17\"")
+            .with_reference("a", "b");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::Watches).len(), 0);
+    }
+
+    #[test]
+    fn reference_freshness_cascades() {
+        // c references b, b references a. a is newest.
+        // b should be flagged (a is newer), c should be flagged (b is older but doesn't matter —
+        // c only checks its direct references)
+        let source = MockSource::new()
+            .with_skill("a", "meta",
+                "name: a\ndescription: A\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-17\"")
+            .with_skill("b", "meta",
+                "name: b\ndescription: B\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-10\"")
+            .with_skill("c", "meta",
+                "name: c\ndescription: C\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-05\"")
+            .with_reference("b", "a")
+            .with_reference("c", "b");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let watch_errors = report.errors_of(CheckKind::Watches);
+        // b is flagged because a (2026-03-17) > b (2026-03-10)
+        assert!(watch_errors.iter().any(|e| matches!(e,
+            LintError::ReferenceNewer { skill, reference, .. }
+            if skill == "b" && reference == "a"
+        )));
+        // c is NOT flagged because b (2026-03-10) < c... wait, c is 2026-03-05 which is older than b 2026-03-10
+        // so c IS flagged because b (2026-03-10) > c (2026-03-05)
+        assert!(watch_errors.iter().any(|e| matches!(e,
+            LintError::ReferenceNewer { skill, reference, .. }
+            if skill == "c" && reference == "b"
+        )));
     }
 }

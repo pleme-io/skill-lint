@@ -28,10 +28,6 @@ pub struct SkillEntry {
     pub concerns: Vec<String>,
     #[serde(default)]
     pub references: Vec<String>,
-    /// File paths this skill depends on. When these change, the skill
-    /// should be reviewed. Paths are relative to the workspace root.
-    #[serde(default)]
-    pub watches: Vec<String>,
 }
 
 /// Root config for the skill map (`skill-map.d/config.yaml`).
@@ -133,7 +129,6 @@ mod tests {
             repo: "test-repo".into(),
             concerns: vec!["testing".into()],
             references: vec![],
-            watches: vec![],
         });
         let yaml = serde_yaml::to_string(&map).unwrap();
         let map2: SkillMap = serde_yaml::from_str(&yaml).unwrap();

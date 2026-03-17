@@ -10,6 +10,7 @@ pub enum CheckKind {
     Frontmatter,
     MapIntegrity,
     Staleness,
+    Watches,
 }
 
 impl fmt::Display for CheckKind {
@@ -20,6 +21,7 @@ impl fmt::Display for CheckKind {
             Self::Frontmatter => write!(f, "frontmatter"),
             Self::MapIntegrity => write!(f, "map-integrity"),
             Self::Staleness => write!(f, "staleness"),
+            Self::Watches => write!(f, "watches"),
         }
     }
 }
@@ -93,6 +95,15 @@ pub enum LintError {
         last_verified: String,
         max_days: u32,
     },
+
+    #[error("[{kind}] skill '{skill}' (verified {skill_date}) references '{reference}' (verified {ref_date}) — referenced skill is newer, review needed")]
+    ReferenceNewer {
+        kind: CheckKind,
+        skill: String,
+        skill_date: String,
+        reference: String,
+        ref_date: String,
+    },
 }
 
 impl LintError {
@@ -110,7 +121,8 @@ impl LintError {
             | Self::DuplicateConcern { kind, .. }
             | Self::MissingVersion { kind }
             | Self::MissingLastModified { kind }
-            | Self::Stale { kind, .. } => *kind,
+            | Self::Stale { kind, .. }
+            | Self::ReferenceNewer { kind, .. } => *kind,
         }
     }
 }
