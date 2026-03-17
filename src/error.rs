@@ -1,35 +1,105 @@
+use std::fmt;
+
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+/// Which check phase produced the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CheckKind {
+    Version,
+    Sync,
+    Frontmatter,
+    MapIntegrity,
+}
+
+impl fmt::Display for CheckKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Version => write!(f, "version"),
+            Self::Sync => write!(f, "sync"),
+            Self::Frontmatter => write!(f, "frontmatter"),
+            Self::MapIntegrity => write!(f, "map-integrity"),
+        }
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum LintError {
-    #[error("skill directory '{0}' has no entry in skill-map.yaml")]
-    MissingMapEntry(String),
+    #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
+    MissingMapEntry { kind: CheckKind, name: String },
 
-    #[error("map entry '{0}' has no skill directory")]
-    OrphanMapEntry(String),
+    #[error("[{kind}] map entry '{name}' has no skill directory")]
+    OrphanMapEntry { kind: CheckKind, name: String },
 
-    #[error("skill '{skill}': frontmatter field '{field}' is missing")]
-    MissingFrontmatter { skill: String, field: String },
+    #[error("[{kind}] skill '{skill}': frontmatter field '{field}' is missing")]
+    MissingFrontmatter {
+        kind: CheckKind,
+        skill: String,
+        field: String,
+    },
 
-    #[error("skill '{skill}': name '{found}' does not match directory '{expected}'")]
+    #[error("[{kind}] skill '{skill}': name '{found}' does not match directory '{expected}'")]
     NameMismatch {
+        kind: CheckKind,
         skill: String,
         found: String,
         expected: String,
     },
 
-    #[error("skill '{skill}' references unknown skill '{target}'")]
-    BrokenReference { skill: String, target: String },
+    #[error("[{kind}] skill '{skill}' references unknown skill '{target}'")]
+    BrokenReference {
+        kind: CheckKind,
+        skill: String,
+        target: String,
+    },
 
-    #[error("skill '{0}' not listed in any domain")]
-    OrphanDomain(String),
+    #[error("[{kind}] skill '{name}' not listed in any domain")]
+    OrphanDomain { kind: CheckKind, name: String },
 
-    #[error("domain '{domain}' lists unknown skill '{skill}'")]
-    GhostDomainEntry { domain: String, skill: String },
+    #[error("[{kind}] domain '{domain}' lists unknown skill '{skill}'")]
+    GhostDomainEntry {
+        kind: CheckKind,
+        domain: String,
+        skill: String,
+    },
 
-    #[error("skill-map.yaml missing 'version' field")]
-    MissingVersion,
+    #[error("[{kind}] skill '{skill}' has domain '{found}' but is listed under '{expected}' in domains index")]
+    DomainMismatch {
+        kind: CheckKind,
+        skill: String,
+        found: String,
+        expected: String,
+    },
 
-    #[error("skill-map.yaml missing 'lastModified' field")]
-    MissingLastModified,
+    #[error("[{kind}] concern '{concern}' claimed by both '{skill_a}' and '{skill_b}'")]
+    DuplicateConcern {
+        kind: CheckKind,
+        concern: String,
+        skill_a: String,
+        skill_b: String,
+    },
+
+    #[error("[{kind}] skill-map.yaml missing 'version' field")]
+    MissingVersion { kind: CheckKind },
+
+    #[error("[{kind}] skill-map.yaml missing 'lastModified' field")]
+    MissingLastModified { kind: CheckKind },
+}
+
+impl LintError {
+    #[must_use]
+    pub fn kind(&self) -> CheckKind {
+        match self {
+            Self::MissingMapEntry { kind, .. }
+            | Self::OrphanMapEntry { kind, .. }
+            | Self::MissingFrontmatter { kind, .. }
+            | Self::NameMismatch { kind, .. }
+            | Self::BrokenReference { kind, .. }
+            | Self::OrphanDomain { kind, .. }
+            | Self::GhostDomainEntry { kind, .. }
+            | Self::DomainMismatch { kind, .. }
+            | Self::DuplicateConcern { kind, .. }
+            | Self::MissingVersion { kind }
+            | Self::MissingLastModified { kind } => *kind,
+        }
+    }
 }

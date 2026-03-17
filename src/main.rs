@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Check { skills_dir } => {
-            let report = check::check_all(&skills_dir)
+            let report = check::check_path(&skills_dir)
                 .with_context(|| format!("checking {}", skills_dir.display()))?;
 
             if report.is_ok() {
