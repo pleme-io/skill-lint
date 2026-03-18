@@ -117,22 +117,19 @@ impl Checker for SyncChecker {
                 errors.push(LintError::MissingMapEntry { kind: CheckKind::Sync, name: name.clone() });
             }
         }
-        // Every map entry must have a local dir OR be from a different repo
-        // Determine the local repo by majority vote of skill entries' repo fields
-        let local_repo = ctx.map.skills.values()
-            .filter(|e| ctx.dir_names.iter().any(|d| ctx.map.skills.get(d).is_some_and(|s| s.repo == e.repo)))
-            .map(|e| e.repo.as_str())
-            .next();
+        // Every map entry must have a local dir OR be from a different repo.
+        // Collect repos that have at least one local directory — these are "local repos."
+        let local_repos: BTreeSet<&str> = ctx.dir_names.iter()
+            .filter_map(|d| ctx.map.skills.get(d).map(|e| e.repo.as_str()))
+            .collect();
         for name in &ctx.map_names {
             if ctx.dir_names.contains(name) {
-                continue; // has local dir — fine
+                continue;
             }
-            // If this skill's repo differs from the local repo, it's expected to be remote
-            if let Some(local) = local_repo {
-                if let Some(entry) = ctx.map.skills.get(name) {
-                    if entry.repo != local {
-                        continue; // remote skill — not an orphan
-                    }
+            // If this skill's repo is NOT one of the local repos, it's expected remote
+            if let Some(entry) = ctx.map.skills.get(name) {
+                if !local_repos.contains(entry.repo.as_str()) {
+                    continue;
                 }
             }
             errors.push(LintError::OrphanMapEntry { kind: CheckKind::Sync, name: name.clone() });
@@ -330,7 +327,7 @@ impl Checker for StalenessChecker {
 pub struct ReferencesFreshnessChecker;
 
 impl Checker for ReferencesFreshnessChecker {
-    fn kind(&self) -> CheckKind { CheckKind::Watches }
+    fn kind(&self) -> CheckKind { CheckKind::References }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
         // Build a map of skill name → last_verified date
         let mut dates: BTreeMap<String, String> = BTreeMap::new();
@@ -351,7 +348,7 @@ impl Checker for ReferencesFreshnessChecker {
                 let Some(ref_date) = dates.get(reference) else { continue };
                 if ref_date > skill_date {
                     errors.push(LintError::ReferenceNewer {
-                        kind: CheckKind::Watches,
+                        kind: CheckKind::References,
                         skill: name.clone(),
                         skill_date: skill_date.clone(),
                         reference: reference.clone(),
@@ -434,7 +431,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             CheckKind::Frontmatter => config.frontmatter,
             CheckKind::MapIntegrity => config.map_integrity || config.duplicate_concerns,
             CheckKind::Staleness => true, // already gated by max_age_days
-            CheckKind::Watches => true,  // always on — pure data check
+            CheckKind::References => true,  // always on — pure data check
         };
         if enabled {
             checker.check(&ctx, &mut report.errors);
@@ -735,12 +732,34 @@ mod tests {
 
     #[test]
     fn orphan_map_entry() {
+        // Need a local skill to establish the local repo ("test"),
+        // so ghost (same repo, no dir) is flagged as orphan
         let source = MockSource::new()
+            .with_skill("local", "meta", &valid_fm("local"))
             .with_skill("ghost", "meta", &valid_fm("ghost"))
             .without_dir("ghost");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert!(report.errors.iter().any(|e| matches!(e,
             LintError::OrphanMapEntry { name, .. } if name == "ghost")));
+    }
+
+    #[test]
+    fn remote_repo_skill_not_flagged_as_orphan() {
+        let mut source = MockSource::new()
+            .with_skill("local-skill", "meta", &valid_fm("local-skill"));
+        // Add a map entry for a skill from a different repo (no local dir expected)
+        source.map.skills.insert("remote-skill".into(), crate::model::SkillEntry {
+            description: "A remote skill".into(),
+            domain: "meta".into(),
+            repo: "other-repo".into(),
+            concerns: vec![],
+            references: vec![],
+        });
+        source.map.domains.get_mut("meta").unwrap().push("remote-skill".into());
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        // remote-skill should NOT be flagged as orphan
+        assert!(!report.errors.iter().any(|e| matches!(e,
+            LintError::OrphanMapEntry { name, .. } if name == "remote-skill")));
     }
 
     #[test]
@@ -1103,7 +1122,7 @@ mod tests {
                 "name: old-skill\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
             .with_reference("new-skill", "old-skill");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
-        assert_eq!(report.errors_of(CheckKind::Watches).len(), 0);
+        assert_eq!(report.errors_of(CheckKind::References).len(), 0);
     }
 
     #[test]
@@ -1115,7 +1134,7 @@ mod tests {
                 "name: b\ndescription: B\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-17\"")
             .with_reference("a", "b");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
-        assert_eq!(report.errors_of(CheckKind::Watches).len(), 0);
+        assert_eq!(report.errors_of(CheckKind::References).len(), 0);
     }
 
     #[test]
@@ -1133,7 +1152,7 @@ mod tests {
             .with_reference("b", "a")
             .with_reference("c", "b");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
-        let watch_errors = report.errors_of(CheckKind::Watches);
+        let watch_errors = report.errors_of(CheckKind::References);
         // b is flagged because a (2026-03-17) > b (2026-03-10)
         assert!(watch_errors.iter().any(|e| matches!(e,
             LintError::ReferenceNewer { skill, reference, .. }

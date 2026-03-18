@@ -10,7 +10,7 @@ pub enum CheckKind {
     Frontmatter,
     MapIntegrity,
     Staleness,
-    Watches,
+    References,
 }
 
 impl fmt::Display for CheckKind {
@@ -21,7 +21,7 @@ impl fmt::Display for CheckKind {
             Self::Frontmatter => write!(f, "frontmatter"),
             Self::MapIntegrity => write!(f, "map-integrity"),
             Self::Staleness => write!(f, "staleness"),
-            Self::Watches => write!(f, "watches"),
+            Self::References => write!(f, "references"),
         }
     }
 }
