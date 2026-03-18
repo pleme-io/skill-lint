@@ -104,19 +104,38 @@ impl Checker for VersionChecker {
     }
 }
 
+/// Sync checker with optional local repo filter.
+/// Skills from other repos (different `repo` field) are excluded from
+/// the orphan check — they legitimately won't have a local directory.
 pub struct SyncChecker;
 impl Checker for SyncChecker {
     fn kind(&self) -> CheckKind { CheckKind::Sync }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
+        // Every local skill dir must have a map entry
         for name in &ctx.dir_names {
             if !ctx.map_names.contains(name) {
                 errors.push(LintError::MissingMapEntry { kind: CheckKind::Sync, name: name.clone() });
             }
         }
+        // Every map entry must have a local dir OR be from a different repo
+        // Determine the local repo by majority vote of skill entries' repo fields
+        let local_repo = ctx.map.skills.values()
+            .filter(|e| ctx.dir_names.iter().any(|d| ctx.map.skills.get(d).is_some_and(|s| s.repo == e.repo)))
+            .map(|e| e.repo.as_str())
+            .next();
         for name in &ctx.map_names {
-            if !ctx.dir_names.contains(name) {
-                errors.push(LintError::OrphanMapEntry { kind: CheckKind::Sync, name: name.clone() });
+            if ctx.dir_names.contains(name) {
+                continue; // has local dir — fine
             }
+            // If this skill's repo differs from the local repo, it's expected to be remote
+            if let Some(local) = local_repo {
+                if let Some(entry) = ctx.map.skills.get(name) {
+                    if entry.repo != local {
+                        continue; // remote skill — not an orphan
+                    }
+                }
+            }
+            errors.push(LintError::OrphanMapEntry { kind: CheckKind::Sync, name: name.clone() });
         }
     }
 }
