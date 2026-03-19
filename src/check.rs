@@ -469,7 +469,7 @@ impl FsSource<'_> {
 
         let config_path = map_dir.join("config.yaml");
         let config: SkillMapConfig = if config_path.exists() {
-            serde_yaml::from_str(&fs::read_to_string(&config_path)?)?
+            serde_yaml_ng::from_str(&fs::read_to_string(&config_path)?)?
         } else {
             SkillMapConfig::default()
         };
@@ -492,7 +492,7 @@ impl FsSource<'_> {
                 .unwrap_or("unknown").to_owned();
             let content = fs::read_to_string(&path)?;
             let domain_skills: BTreeMap<String, SkillEntry> =
-                serde_yaml::from_str(&content)?;
+                serde_yaml_ng::from_str(&content)?;
 
             let mut members = Vec::new();
             for (name, entry) in domain_skills {
@@ -541,7 +541,7 @@ impl SkillSource for FsSource<'_> {
             self.skills_dir.display()
         );
         let content = fs::read_to_string(&path)?;
-        Ok(serde_yaml::from_str(&content)?)
+        Ok(serde_yaml_ng::from_str(&content)?)
     }
 
     fn skill_dirs(&self) -> anyhow::Result<BTreeSet<String>> {

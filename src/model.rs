@@ -70,7 +70,7 @@ pub fn parse_frontmatter(content: &str) -> anyhow::Result<SkillFrontmatter> {
         .find("\n---")
         .ok_or_else(|| anyhow::anyhow!("missing closing --- delimiter"))?;
     let yaml = &rest[..end];
-    Ok(serde_yaml::from_str(yaml)?)
+    Ok(serde_yaml_ng::from_str(yaml)?)
 }
 
 #[cfg(test)]
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn deserialize_skill_map() {
         let yaml = "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains:\n  rust: [rust-binary]\n  meta: [claude-skills]\nskills:\n  rust-binary:\n    description: Build\n    domain: rust\n    repo: bp\n  claude-skills:\n    description: Meta\n    domain: meta\n    repo: bp\n";
-        let map: SkillMap = serde_yaml::from_str(yaml).unwrap();
+        let map: SkillMap = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(map.skills.len(), 2);
         assert_eq!(map.domains.len(), 2);
         assert_eq!(map.version.as_deref(), Some("1.0.0"));
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn deserialize_empty_map() {
         let yaml = "skills: {}\ndomains: {}\n";
-        let map: SkillMap = serde_yaml::from_str(yaml).unwrap();
+        let map: SkillMap = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(map.skills.is_empty());
         assert!(map.version.is_none());
     }
@@ -130,8 +130,8 @@ mod tests {
             concerns: vec!["testing".into()],
             references: vec![],
         });
-        let yaml = serde_yaml::to_string(&map).unwrap();
-        let map2: SkillMap = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&map).unwrap();
+        let map2: SkillMap = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(map, map2);
     }
 
