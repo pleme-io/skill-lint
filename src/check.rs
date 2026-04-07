@@ -480,7 +480,8 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
 /// # Errors
 ///
 /// Returns an error if the directory or map can't be read.
-pub fn check_path(skills_dir: &Path) -> anyhow::Result<Report> {
+pub fn check_path(skills_dir: impl AsRef<Path>) -> anyhow::Result<Report> {
+    let skills_dir = skills_dir.as_ref();
     check_all(&FsSource { skills_dir, map_dir_override: None }, &CheckConfig::default())
 }
 
