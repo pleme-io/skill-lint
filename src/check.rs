@@ -1188,6 +1188,298 @@ mod tests {
         assert_eq!(report.errors_of(CheckKind::References).len(), 0);
     }
 
+    // ─── Individual checker tests (additional) ──────────────────
+
+    #[test]
+    fn frontmatter_checker_independently() {
+        let source = MockSource::new()
+            .with_skill("bad", "meta", "name: wrong");
+        let ctx = CheckContext::from_source(&source).unwrap();
+        let mut errors = Vec::new();
+        FrontmatterChecker.check(&ctx, &mut errors);
+        assert!(errors.iter().any(|e| matches!(e, LintError::NameMismatch { .. })));
+        assert!(errors.iter().any(|e| matches!(e,
+            LintError::MissingFrontmatter { field, .. } if field == "metadata")));
+    }
+
+    #[test]
+    fn map_integrity_checker_independently() {
+        let source = MockSource::new()
+            .with_skill("a", "meta", &valid_fm("a"))
+            .with_reference("a", "nonexistent");
+        let ctx = CheckContext::from_source(&source).unwrap();
+        let mut errors = Vec::new();
+        MapIntegrityChecker.check(&ctx, &mut errors);
+        assert!(errors.iter().any(|e| matches!(e, LintError::BrokenReference { .. })));
+    }
+
+    #[test]
+    fn staleness_checker_independently() {
+        let source = MockSource::new()
+            .with_skill("old", "meta",
+                "name: old\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2025-01-01\"");
+        let ctx = CheckContext::from_source(&source).unwrap();
+        let mut errors = Vec::new();
+        let checker = StalenessChecker { max_days: 90, today: "2026-03-17".into() };
+        checker.check(&ctx, &mut errors);
+        assert!(errors.iter().any(|e| matches!(e, LintError::Stale { skill, .. } if skill == "old")));
+    }
+
+    #[test]
+    fn references_freshness_checker_independently() {
+        let source = MockSource::new()
+            .with_skill("old-skill", "meta",
+                "name: old-skill\ndescription: Old\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
+            .with_skill("new-skill", "meta",
+                "name: new-skill\ndescription: New\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-15\"")
+            .with_reference("old-skill", "new-skill");
+        let ctx = CheckContext::from_source(&source).unwrap();
+        let mut errors = Vec::new();
+        ReferencesFreshnessChecker.check(&ctx, &mut errors);
+        assert!(errors.iter().any(|e| matches!(e,
+            LintError::ReferenceNewer { skill, reference, .. }
+            if skill == "old-skill" && reference == "new-skill"
+        )));
+    }
+
+    // ─── CheckConfig defaults ─────────────────────────────────────
+
+    #[test]
+    fn check_config_defaults() {
+        let cfg = CheckConfig::default();
+        assert!(cfg.version);
+        assert!(cfg.sync);
+        assert!(cfg.frontmatter);
+        assert!(cfg.map_integrity);
+        assert!(cfg.duplicate_concerns);
+        assert!(cfg.max_age_days.is_none());
+        assert!(cfg.today.is_none());
+    }
+
+    // ─── Report ──────────────────────────────────────────────────
+
+    #[test]
+    fn report_new_is_ok() {
+        let report = Report::new(5);
+        assert!(report.is_ok());
+        assert_eq!(report.skills_checked, 5);
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn report_not_ok_with_errors() {
+        let mut report = Report::new(1);
+        report.errors.push(LintError::MissingVersion { kind: CheckKind::Version });
+        assert!(!report.is_ok());
+    }
+
+    // ─── CheckContext construction ────────────────────────────────
+
+    #[test]
+    fn check_context_populates_map_names() {
+        let source = MockSource::new()
+            .with_skill("a", "meta", &valid_fm("a"))
+            .with_skill("b", "tools", &valid_fm("b"));
+        let ctx = CheckContext::from_source(&source).unwrap();
+        assert!(ctx.map_names.contains("a"));
+        assert!(ctx.map_names.contains("b"));
+        assert_eq!(ctx.map_names.len(), 2);
+    }
+
+    #[test]
+    fn check_context_loads_contents() {
+        let source = MockSource::new()
+            .with_skill("s", "meta", &valid_fm("s"));
+        let ctx = CheckContext::from_source(&source).unwrap();
+        assert!(ctx.contents.get("s").unwrap().contains("name: s"));
+    }
+
+    // ─── Staleness edge cases ─────────────────────────────────────
+
+    #[test]
+    fn days_since_different_months() {
+        assert_eq!(StalenessChecker::days_since("2026-06-15", "2026-03-15"), Some(90));
+    }
+
+    #[test]
+    fn days_since_end_of_year() {
+        assert_eq!(StalenessChecker::days_since("2027-01-01", "2026-12-01"), Some(365 + (-11) * 30));
+    }
+
+    #[test]
+    fn days_since_invalid_format() {
+        assert!(StalenessChecker::days_since("2026-03", "2026-03-17").is_none());
+        assert!(StalenessChecker::days_since("not-a-date", "also-bad").is_none());
+        assert!(StalenessChecker::days_since("", "").is_none());
+    }
+
+    #[test]
+    fn staleness_exactly_at_threshold() {
+        let source = MockSource::new()
+            .with_skill("edge", "meta",
+                "name: edge\ndescription: E\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"");
+        let config = CheckConfig {
+            max_age_days: Some(75),
+            today: Some("2026-03-17".into()),
+            ..Default::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        let stale_errors = report.errors_of(CheckKind::Staleness);
+        assert_eq!(stale_errors.len(), 1);
+    }
+
+    #[test]
+    fn staleness_skips_unparseable_frontmatter() {
+        let source = MockSource::new()
+            .with_skill("broken", "meta", &valid_fm("broken"))
+            .with_raw_content("broken", "no delimiters");
+        let config = CheckConfig {
+            max_age_days: Some(1),
+            today: Some("2026-03-17".into()),
+            ..Default::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        assert_eq!(report.errors_of(CheckKind::Staleness).len(), 0);
+    }
+
+    #[test]
+    fn staleness_skips_missing_last_verified() {
+        let source = MockSource::new()
+            .with_skill("no-date", "meta",
+                "name: no-date\ndescription: X\nmetadata:\n  version: \"1.0.0\"");
+        let config = CheckConfig {
+            max_age_days: Some(1),
+            today: Some("2026-03-17".into()),
+            ..Default::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        assert_eq!(report.errors_of(CheckKind::Staleness).len(), 0);
+    }
+
+    // ─── Frontmatter missing last_verified ────────────────────────
+
+    #[test]
+    fn missing_metadata_last_verified() {
+        let source = MockSource::new()
+            .with_skill("no-lv", "meta",
+                "name: no-lv\ndescription: X\nmetadata:\n  version: \"1.0.0\"");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert!(report.errors.iter().any(|e| matches!(e,
+            LintError::MissingFrontmatter { field, .. } if field == "metadata.last_verified")));
+    }
+
+    // ─── References edge cases ────────────────────────────────────
+
+    #[test]
+    fn reference_to_skill_without_date_is_ignored() {
+        let source = MockSource::new()
+            .with_skill("dated", "meta",
+                "name: dated\ndescription: D\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
+            .with_skill("undated", "meta",
+                "name: undated\ndescription: U\nmetadata:\n  version: \"1.0.0\"")
+            .with_reference("dated", "undated");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::References).len(), 0);
+    }
+
+    #[test]
+    fn reference_from_skill_without_date_is_ignored() {
+        let source = MockSource::new()
+            .with_skill("undated", "meta",
+                "name: undated\ndescription: U\nmetadata:\n  version: \"1.0.0\"")
+            .with_skill("dated", "meta",
+                "name: dated\ndescription: D\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-15\"")
+            .with_reference("undated", "dated");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::References).len(), 0);
+    }
+
+    // ─── Filesystem edge cases ────────────────────────────────────
+
+    #[test]
+    fn filesystem_dir_without_skill_md_ignored() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let not_a_skill = dir.path().join("not-a-skill");
+        fs::create_dir_all(&not_a_skill).unwrap();
+        fs::write(not_a_skill.join("README.md"), "not a skill").unwrap();
+        fs::write(dir.path().join("skill-map.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains: {}\nskills: {}\n"
+        ).unwrap();
+        let report = check_path(dir.path()).unwrap();
+        assert!(report.is_ok());
+        assert_eq!(report.skills_checked, 0);
+    }
+
+    #[test]
+    fn filesystem_sibling_map_dir() {
+        use tempfile::TempDir;
+        let root = TempDir::new().unwrap();
+        let skills_dir = root.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"),
+            format!("---\n{}\n---\n\n# Body\n", valid_fm("test-skill"))).unwrap();
+
+        let map_dir = root.path().join("skill-map.d");
+        fs::create_dir_all(&map_dir).unwrap();
+        fs::write(map_dir.join("config.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\n").unwrap();
+        fs::write(map_dir.join("meta.yaml"),
+            "test-skill:\n  description: A test\n  domain: meta\n  repo: test\n").unwrap();
+
+        let report = check_path(&skills_dir).unwrap();
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        assert_eq!(report.skills_checked, 1);
+    }
+
+    #[test]
+    fn filesystem_map_dir_override() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let map_dir = dir.path().join("custom-map");
+        fs::create_dir_all(&map_dir).unwrap();
+        fs::write(map_dir.join("config.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\n").unwrap();
+
+        let skills_dir = dir.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"),
+            format!("---\n{}\n---\n\n# Body\n", valid_fm("test-skill"))).unwrap();
+
+        fs::write(map_dir.join("meta.yaml"),
+            "test-skill:\n  description: A test\n  domain: meta\n  repo: test\n").unwrap();
+
+        let source = FsSource { skills_dir: &skills_dir, map_dir_override: Some(&map_dir) };
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+    }
+
+    #[test]
+    fn filesystem_missing_map_returns_error() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let result = check_path(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn filesystem_map_dir_override_nonexistent_fails() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let skills_dir = dir.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let bad_map = dir.path().join("nonexistent");
+        let source = FsSource { skills_dir: &skills_dir, map_dir_override: Some(&bad_map) };
+        assert!(check_all(&source, &CheckConfig::default()).is_err());
+    }
+
+    // ─── References freshness cascades ────────────────────────────
+
     #[test]
     fn reference_freshness_cascades() {
         // c references b, b references a. a is newest.

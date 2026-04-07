@@ -128,3 +128,88 @@ impl LintError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_kind_display() {
+        assert_eq!(CheckKind::Version.to_string(), "version");
+        assert_eq!(CheckKind::Sync.to_string(), "sync");
+        assert_eq!(CheckKind::Frontmatter.to_string(), "frontmatter");
+        assert_eq!(CheckKind::MapIntegrity.to_string(), "map-integrity");
+        assert_eq!(CheckKind::Staleness.to_string(), "staleness");
+        assert_eq!(CheckKind::References.to_string(), "references");
+    }
+
+    #[test]
+    fn lint_error_kind_extraction() {
+        let cases: Vec<(LintError, CheckKind)> = vec![
+            (LintError::MissingMapEntry { kind: CheckKind::Sync, name: "x".into() }, CheckKind::Sync),
+            (LintError::OrphanMapEntry { kind: CheckKind::Sync, name: "x".into() }, CheckKind::Sync),
+            (LintError::MissingFrontmatter { kind: CheckKind::Frontmatter, skill: "x".into(), field: "y".into() }, CheckKind::Frontmatter),
+            (LintError::NameMismatch { kind: CheckKind::Frontmatter, skill: "x".into(), found: "a".into(), expected: "b".into() }, CheckKind::Frontmatter),
+            (LintError::BrokenReference { kind: CheckKind::MapIntegrity, skill: "x".into(), target: "y".into() }, CheckKind::MapIntegrity),
+            (LintError::OrphanDomain { kind: CheckKind::MapIntegrity, name: "x".into() }, CheckKind::MapIntegrity),
+            (LintError::GhostDomainEntry { kind: CheckKind::MapIntegrity, domain: "d".into(), skill: "x".into() }, CheckKind::MapIntegrity),
+            (LintError::DomainMismatch { kind: CheckKind::MapIntegrity, skill: "x".into(), found: "a".into(), expected: "b".into() }, CheckKind::MapIntegrity),
+            (LintError::DuplicateConcern { kind: CheckKind::MapIntegrity, concern: "c".into(), skill_a: "a".into(), skill_b: "b".into() }, CheckKind::MapIntegrity),
+            (LintError::MissingVersion { kind: CheckKind::Version }, CheckKind::Version),
+            (LintError::MissingLastModified { kind: CheckKind::Version }, CheckKind::Version),
+            (LintError::Stale { kind: CheckKind::Staleness, skill: "x".into(), last_verified: "d".into(), max_days: 90 }, CheckKind::Staleness),
+            (LintError::ReferenceNewer { kind: CheckKind::References, skill: "x".into(), skill_date: "d1".into(), reference: "y".into(), ref_date: "d2".into() }, CheckKind::References),
+        ];
+        for (err, expected_kind) in cases {
+            assert_eq!(err.kind(), expected_kind, "wrong kind for {err}");
+        }
+    }
+
+    #[test]
+    fn lint_error_display_contains_name() {
+        let err = LintError::MissingMapEntry {
+            kind: CheckKind::Sync,
+            name: "my-skill".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("my-skill"), "expected skill name in: {msg}");
+        assert!(msg.contains("[sync]"), "expected kind tag in: {msg}");
+    }
+
+    #[test]
+    fn lint_error_display_stale() {
+        let err = LintError::Stale {
+            kind: CheckKind::Staleness,
+            skill: "old-skill".into(),
+            last_verified: "2025-01-01".into(),
+            max_days: 90,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("old-skill"));
+        assert!(msg.contains("2025-01-01"));
+        assert!(msg.contains("90"));
+    }
+
+    #[test]
+    fn lint_error_display_reference_newer() {
+        let err = LintError::ReferenceNewer {
+            kind: CheckKind::References,
+            skill: "a".into(),
+            skill_date: "2026-01-01".into(),
+            reference: "b".into(),
+            ref_date: "2026-03-15".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("a"));
+        assert!(msg.contains("b"));
+        assert!(msg.contains("2026-01-01"));
+        assert!(msg.contains("2026-03-15"));
+    }
+
+    #[test]
+    fn check_kind_equality_and_copy() {
+        let k1 = CheckKind::Version;
+        let k2 = k1;
+        assert_eq!(k1, k2);
+    }
+}

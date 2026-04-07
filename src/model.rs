@@ -144,4 +144,73 @@ mod tests {
         assert!(fm.name.is_none());
         assert!(fm.metadata.is_none());
     }
+
+    #[test]
+    fn parse_frontmatter_with_leading_whitespace() {
+        let content = "  \n---\nname: trimmed\n---\n# Body";
+        let fm = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.name.as_deref(), Some("trimmed"));
+    }
+
+    #[test]
+    fn parse_frontmatter_allowed_tools_alias() {
+        let content = "---\nname: s\nallowed-tools: Read, Bash\n---\n";
+        let fm = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.allowed_tools.as_deref(), Some("Read, Bash"));
+    }
+
+    #[test]
+    fn parse_frontmatter_allowed_tools_underscore() {
+        let content = "---\nname: s\nallowed_tools: Write\n---\n";
+        let fm = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.allowed_tools.as_deref(), Some("Write"));
+    }
+
+    #[test]
+    fn deserialize_skill_entry_minimal() {
+        let yaml = "description: Build stuff\ndomain: rust\nrepo: bp\n";
+        let entry: SkillEntry = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(entry.description, "Build stuff");
+        assert!(entry.concerns.is_empty());
+        assert!(entry.references.is_empty());
+    }
+
+    #[test]
+    fn deserialize_skill_entry_with_concerns_and_refs() {
+        let yaml = "description: X\ndomain: d\nrepo: r\nconcerns: [a, b]\nreferences: [c]\n";
+        let entry: SkillEntry = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(entry.concerns, vec!["a", "b"]);
+        assert_eq!(entry.references, vec!["c"]);
+    }
+
+    #[test]
+    fn skill_map_config_default() {
+        let cfg = SkillMapConfig::default();
+        assert!(cfg.version.is_none());
+        assert!(cfg.last_modified.is_none());
+    }
+
+    #[test]
+    fn skill_map_config_roundtrip() {
+        let yaml = "version: \"2.0.0\"\nlastModified: \"2026-04-01\"\n";
+        let cfg: SkillMapConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.version.as_deref(), Some("2.0.0"));
+        assert_eq!(cfg.last_modified.as_deref(), Some("2026-04-01"));
+    }
+
+    #[test]
+    fn skill_map_default_has_empty_collections() {
+        let map = SkillMap::default();
+        assert!(map.skills.is_empty());
+        assert!(map.domains.is_empty());
+        assert!(map.version.is_none());
+        assert!(map.last_modified.is_none());
+    }
+
+    #[test]
+    fn skill_metadata_default() {
+        let m = SkillMetadata::default();
+        assert!(m.version.is_none());
+        assert!(m.last_verified.is_none());
+    }
 }
