@@ -69,12 +69,12 @@ impl CheckContext {
         let map = source.skill_map()?;
         let dir_names = source.skill_dirs()?;
         let map_names: BTreeSet<String> = map.skills.keys().cloned().collect();
-        let mut contents = BTreeMap::new();
-        for name in &dir_names {
-            if let Ok(c) = source.skill_content(name) {
-                contents.insert(name.clone(), c);
-            }
-        }
+        let contents: BTreeMap<String, String> = dir_names
+            .iter()
+            .filter_map(|name| {
+                source.skill_content(name).ok().map(|c| (name.clone(), c))
+            })
+            .collect();
         Ok(Self { map, dir_names, map_names, contents })
     }
 
@@ -253,16 +253,18 @@ pub struct MapIntegrityChecker;
 impl Checker for MapIntegrityChecker {
     fn kind(&self) -> CheckKind { CheckKind::MapIntegrity }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        // References must point to existing skills
-        for (name, entry) in &ctx.map.skills {
-            for r in &entry.references {
-                if !ctx.map_names.contains(r) {
-                    errors.push(LintError::BrokenReference {
-                        kind: CheckKind::MapIntegrity, skill: name.clone(), target: r.clone(),
-                    });
-                }
-            }
-        }
+        errors.extend(
+            ctx.map.skills.iter()
+                .flat_map(|(name, entry)| {
+                    entry.references.iter()
+                        .filter(|r| !ctx.map_names.contains(*r))
+                        .map(move |r| LintError::BrokenReference {
+                            kind: CheckKind::MapIntegrity,
+                            skill: name.clone(),
+                            target: r.clone(),
+                        })
+                })
+        );
 
         // Domain index consistency
         let mut domain_of_skill: BTreeMap<String, String> = BTreeMap::new();
@@ -530,11 +532,8 @@ impl FsSource<'_> {
             let domain_skills: BTreeMap<String, SkillEntry> =
                 serde_yaml_ng::from_str(&content)?;
 
-            let mut members = Vec::new();
-            for (name, entry) in domain_skills {
-                members.push(name.clone());
-                skills.insert(name, entry);
-            }
+            let members: Vec<String> = domain_skills.keys().cloned().collect();
+            skills.extend(domain_skills);
             domains.insert(domain, members);
         }
 
