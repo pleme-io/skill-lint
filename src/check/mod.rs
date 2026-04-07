@@ -1,9 +1,18 @@
+mod checkers;
+mod fs_source;
+pub mod testing;
+
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::Path;
 
 use crate::error::{CheckKind, LintError};
-use crate::model::{self, SkillEntry, SkillMap};
+use crate::model::{self, SkillMap};
+
+pub use checkers::{
+    FrontmatterChecker, MapIntegrityChecker, ReferencesFreshnessChecker, StalenessChecker,
+    SyncChecker, VersionChecker,
+};
+pub use fs_source::FsSource;
 
 // ═══════════════════════════════════════════════════════════════════
 // SkillSource trait — abstracts I/O for testability
@@ -134,261 +143,6 @@ impl Default for CheckConfig {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Built-in checkers
-// ═══════════════════════════════════════════════════════════════════
-
-/// Validates that the skill map contains `version` and `lastModified` fields.
-pub struct VersionChecker;
-impl Checker for VersionChecker {
-    fn kind(&self) -> CheckKind { CheckKind::Version }
-    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        if ctx.map.version.is_none() {
-            errors.push(LintError::MissingVersion { kind: CheckKind::Version });
-        }
-        if ctx.map.last_modified.is_none() {
-            errors.push(LintError::MissingLastModified { kind: CheckKind::Version });
-        }
-    }
-}
-
-/// Sync checker with optional local repo filter.
-/// Skills from other repos (different `repo` field) are excluded from
-/// the orphan check — they legitimately won't have a local directory.
-pub struct SyncChecker;
-impl Checker for SyncChecker {
-    fn kind(&self) -> CheckKind { CheckKind::Sync }
-    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        // Every local skill dir must have a map entry
-        for name in &ctx.dir_names {
-            if !ctx.map_names.contains(name) {
-                errors.push(LintError::MissingMapEntry { kind: CheckKind::Sync, name: name.clone() });
-            }
-        }
-        // Every map entry must have a local dir OR be from a different repo.
-        // Collect repos that have at least one local directory — these are "local repos."
-        let local_repos: BTreeSet<&str> = ctx.dir_names.iter()
-            .filter_map(|d| ctx.map.skills.get(d).map(|e| e.repo.as_str()))
-            .collect();
-        for name in &ctx.map_names {
-            if ctx.dir_names.contains(name) {
-                continue;
-            }
-            if let Some(entry) = ctx.map.skills.get(name)
-                && !local_repos.contains(entry.repo.as_str())
-            {
-                continue;
-            }
-            errors.push(LintError::OrphanMapEntry { kind: CheckKind::Sync, name: name.clone() });
-        }
-    }
-}
-
-/// Validates `SKILL.md` frontmatter: required fields, name/dir consistency.
-pub struct FrontmatterChecker;
-impl Checker for FrontmatterChecker {
-    fn kind(&self) -> CheckKind { CheckKind::Frontmatter }
-    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        for name in &ctx.dir_names {
-            let Some(content) = ctx.contents.get(name) else {
-                continue;
-            };
-
-            let Ok(fm) = model::parse_frontmatter(content) else {
-                errors.push(LintError::MissingFrontmatter {
-                    kind: CheckKind::Frontmatter,
-                    skill: name.clone(),
-                    field: "frontmatter (parse error)".into(),
-                });
-                continue;
-            };
-
-            match &fm.name {
-                Some(n) if n != name => {
-                    errors.push(LintError::NameMismatch {
-                        kind: CheckKind::Frontmatter, skill: name.clone(),
-                        found: n.clone(), expected: name.clone(),
-                    });
-                }
-                None => {
-                    errors.push(LintError::MissingFrontmatter {
-                        kind: CheckKind::Frontmatter, skill: name.clone(), field: "name".into(),
-                    });
-                }
-                _ => {}
-            }
-
-            if fm.description.is_none() {
-                errors.push(LintError::MissingFrontmatter {
-                    kind: CheckKind::Frontmatter, skill: name.clone(), field: "description".into(),
-                });
-            }
-
-            match &fm.metadata {
-                Some(m) => {
-                    if m.version.is_none() {
-                        errors.push(LintError::MissingFrontmatter {
-                            kind: CheckKind::Frontmatter, skill: name.clone(),
-                            field: "metadata.version".into(),
-                        });
-                    }
-                    if m.last_verified.is_none() {
-                        errors.push(LintError::MissingFrontmatter {
-                            kind: CheckKind::Frontmatter, skill: name.clone(),
-                            field: "metadata.last_verified".into(),
-                        });
-                    }
-                }
-                None => {
-                    errors.push(LintError::MissingFrontmatter {
-                        kind: CheckKind::Frontmatter, skill: name.clone(), field: "metadata".into(),
-                    });
-                }
-            }
-        }
-    }
-}
-
-/// Validates map structural integrity: references, domain index, duplicate concerns.
-pub struct MapIntegrityChecker;
-impl Checker for MapIntegrityChecker {
-    fn kind(&self) -> CheckKind { CheckKind::MapIntegrity }
-    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        errors.extend(
-            ctx.map.skills.iter()
-                .flat_map(|(name, entry)| {
-                    entry.references.iter()
-                        .filter(|r| !ctx.map_names.contains(*r))
-                        .map(move |r| LintError::BrokenReference {
-                            kind: CheckKind::MapIntegrity,
-                            skill: name.clone(),
-                            target: r.clone(),
-                        })
-                })
-        );
-
-        // Domain index consistency
-        let mut domain_of_skill: BTreeMap<String, String> = BTreeMap::new();
-        for (domain_name, members) in &ctx.map.domains {
-            for member in members {
-                if !ctx.map_names.contains(member) {
-                    errors.push(LintError::GhostDomainEntry {
-                        kind: CheckKind::MapIntegrity, domain: domain_name.clone(),
-                        skill: member.clone(),
-                    });
-                }
-                domain_of_skill.insert(member.clone(), domain_name.clone());
-            }
-        }
-
-        // Every skill must appear in domains index
-        for name in &ctx.map_names {
-            if !domain_of_skill.contains_key(name) {
-                errors.push(LintError::OrphanDomain { kind: CheckKind::MapIntegrity, name: name.clone() });
-            }
-        }
-
-        for (name, entry) in &ctx.map.skills {
-            if let Some(listed_domain) = domain_of_skill.get(name)
-                && *listed_domain != entry.domain
-            {
-                errors.push(LintError::DomainMismatch {
-                    kind: CheckKind::MapIntegrity,
-                    skill: name.clone(),
-                    found: entry.domain.clone(),
-                    expected: listed_domain.clone(),
-                });
-            }
-        }
-
-        // Duplicate concerns (case-insensitive)
-        let mut concern_owners: BTreeMap<String, String> = BTreeMap::new();
-        for (name, entry) in &ctx.map.skills {
-            for concern in &entry.concerns {
-                let normalized = concern.to_lowercase();
-                if let Some(existing) = concern_owners.get(&normalized) {
-                    errors.push(LintError::DuplicateConcern {
-                        kind: CheckKind::MapIntegrity, concern: concern.clone(),
-                        skill_a: existing.clone(), skill_b: name.clone(),
-                    });
-                } else {
-                    concern_owners.insert(normalized, name.clone());
-                }
-            }
-        }
-    }
-}
-
-/// Flags skills whose `last_verified` date exceeds a configurable threshold.
-pub struct StalenessChecker {
-    /// Maximum allowed age in days.
-    pub max_days: u32,
-    /// Reference date (`YYYY-MM-DD`) used as "today".
-    pub today: String,
-}
-
-impl StalenessChecker {
-    fn days_since(today: &str, date: &str) -> Option<i64> {
-        // Simple YYYY-MM-DD date diff (no chrono dependency)
-        let parse = |s: &str| -> Option<(i64, i64, i64)> {
-            let parts: Vec<&str> = s.split('-').collect();
-            if parts.len() != 3 { return None; }
-            Some((parts[0].parse().ok()?, parts[1].parse().ok()?, parts[2].parse().ok()?))
-        };
-        let (ty, tm, td) = parse(today)?;
-        let (dy, dm, dd) = parse(date)?;
-        // Approximate: good enough for staleness thresholds
-        Some((ty - dy) * 365 + (tm - dm) * 30 + (td - dd))
-    }
-}
-
-impl Checker for StalenessChecker {
-    fn kind(&self) -> CheckKind { CheckKind::Staleness }
-    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        let dates = ctx.last_verified_dates();
-        for (name, date) in &dates {
-            if let Some(age) = Self::days_since(&self.today, date)
-                && age > i64::from(self.max_days)
-            {
-                errors.push(LintError::Stale {
-                    kind: CheckKind::Staleness,
-                    skill: name.clone(),
-                    last_verified: date.clone(),
-                    max_days: self.max_days,
-                });
-            }
-        }
-    }
-}
-
-/// Checks if any referenced skill was verified more recently than the
-/// referencing skill. If so, the referencing skill may need review.
-/// Pure data check — no filesystem access, no workspace root needed.
-pub struct ReferencesFreshnessChecker;
-
-impl Checker for ReferencesFreshnessChecker {
-    fn kind(&self) -> CheckKind { CheckKind::References }
-    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        let dates = ctx.last_verified_dates();
-
-        for (name, entry) in &ctx.map.skills {
-            let Some(skill_date) = dates.get(name) else { continue };
-            for reference in &entry.references {
-                let Some(ref_date) = dates.get(reference) else { continue };
-                if ref_date > skill_date {
-                    errors.push(LintError::ReferenceNewer {
-                        kind: CheckKind::References,
-                        skill: name.clone(),
-                        skill_date: skill_date.clone(),
-                        reference: reference.clone(),
-                        ref_date: ref_date.clone(),
-                    });
-                }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // Report
 // ═══════════════════════════════════════════════════════════════════
 
@@ -403,7 +157,6 @@ pub struct Report {
 
 impl Report {
     /// Create an empty report for the given number of checked skills.
-    #[must_use]
     pub fn new(skills_checked: usize) -> Self {
         Self { errors: Vec::new(), skills_checked }
     }
@@ -441,7 +194,6 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
 
     if let Some(max_days) = config.max_age_days {
         let today = config.today.clone().unwrap_or_else(|| {
-            // Default to current date
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -456,7 +208,6 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
         checkers.push(Box::new(StalenessChecker { max_days, today }));
     }
 
-    // Always check references freshness — pure data, no config needed
     checkers.push(Box::new(ReferencesFreshnessChecker));
 
     for checker in &checkers {
@@ -465,7 +216,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             CheckKind::Sync => config.sync,
             CheckKind::Frontmatter => config.frontmatter,
             CheckKind::MapIntegrity => config.map_integrity || config.duplicate_concerns,
-            CheckKind::Staleness | CheckKind::References => true,
+            _ => true,
         };
         if enabled {
             checker.check(&ctx, &mut report.errors);
@@ -486,249 +237,13 @@ pub fn check_path(skills_dir: impl AsRef<Path>) -> anyhow::Result<Report> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Filesystem source
-// ═══════════════════════════════════════════════════════════════════
-
-/// Filesystem-backed [`SkillSource`] that reads skills and maps from disk.
-pub struct FsSource<'a> {
-    /// Root directory containing skill subdirectories.
-    pub skills_dir: &'a Path,
-    /// Override for skill-map.d/ location. If None, searches:
-    /// 1. {skills_dir}/skill-map.d/
-    /// 2. {skills_dir}/../skill-map.d/
-    /// 3. {skills_dir}/skill-map.yaml (legacy)
-    pub map_dir_override: Option<&'a Path>,
-}
-
-impl FsSource<'_> {
-    fn load_split_map(map_dir: &Path) -> anyhow::Result<SkillMap> {
-        use crate::model::SkillMapConfig;
-
-        let config_path = map_dir.join("config.yaml");
-        let config: SkillMapConfig = if config_path.exists() {
-            serde_yaml_ng::from_str(&fs::read_to_string(&config_path)?)?
-        } else {
-            SkillMapConfig::default()
-        };
-
-        let mut skills = BTreeMap::new();
-        let mut domains = BTreeMap::new();
-
-        let mut paths: Vec<_> = fs::read_dir(map_dir)?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension().is_some_and(|e| e == "yaml")
-                    && p.file_stem().is_some_and(|s| s != "config")
-            })
-            .collect();
-        paths.sort();
-
-        for path in paths {
-            let domain = path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(ToOwned::to_owned)
-                .unwrap_or_default();
-            let content = fs::read_to_string(&path)?;
-            let domain_skills: BTreeMap<String, SkillEntry> =
-                serde_yaml_ng::from_str(&content)?;
-
-            let members: Vec<String> = domain_skills.keys().cloned().collect();
-            skills.extend(domain_skills);
-            domains.insert(domain, members);
-        }
-
-        Ok(SkillMap {
-            version: config.version,
-            last_modified: config.last_modified,
-            domains,
-            skills,
-        })
-    }
-}
-
-impl SkillSource for FsSource<'_> {
-    fn skill_map(&self) -> anyhow::Result<SkillMap> {
-        // 1. Explicit override
-        if let Some(dir) = self.map_dir_override {
-            anyhow::ensure!(dir.is_dir(), "map-dir {} does not exist", dir.display());
-            return Self::load_split_map(dir);
-        }
-
-        // 2. skill-map.d/ inside skills dir
-        let map_dir = self.skills_dir.join("skill-map.d");
-        if map_dir.is_dir() {
-            return Self::load_split_map(&map_dir);
-        }
-
-        // 3. skill-map.d/ as sibling of skills dir
-        if let Some(parent) = self.skills_dir.parent() {
-            let sibling = parent.join("skill-map.d");
-            if sibling.is_dir() {
-                return Self::load_split_map(&sibling);
-            }
-        }
-
-        // 4. Legacy: single skill-map.yaml
-        let path = self.skills_dir.join("skill-map.yaml");
-        anyhow::ensure!(
-            path.exists(),
-            "skill-map.d/ or skill-map.yaml not found for {}",
-            self.skills_dir.display()
-        );
-        let content = fs::read_to_string(&path)?;
-        Ok(serde_yaml_ng::from_str(&content)?)
-    }
-
-    fn skill_dirs(&self) -> anyhow::Result<BTreeSet<String>> {
-        let mut names = BTreeSet::new();
-        for entry in fs::read_dir(self.skills_dir)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if entry.file_type()?.is_dir()
-                && self.skills_dir.join(&name).join("SKILL.md").exists()
-            {
-                names.insert(name);
-            }
-        }
-        Ok(names)
-    }
-
-    fn skill_content(&self, name: &str) -> anyhow::Result<String> {
-        Ok(fs::read_to_string(self.skills_dir.join(name).join("SKILL.md"))?)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Testing module — exported for downstream test reuse
-// ═══════════════════════════════════════════════════════════════════
-
-pub mod testing {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use crate::model::{SkillEntry, SkillMap};
-
-    use super::SkillSource;
-
-    /// In-memory skill source for deterministic testing without filesystem.
-    /// Use the builder methods to construct test scenarios.
-    pub struct MockSource {
-        /// The in-memory skill map.
-        pub map: SkillMap,
-        /// Simulated directory names.
-        pub dirs: BTreeSet<String>,
-        /// Simulated `SKILL.md` contents keyed by skill name.
-        pub contents: BTreeMap<String, String>,
-    }
-
-    impl MockSource {
-        /// Create a source pre-loaded with version/`lastModified` but no skills.
-        #[must_use]
-        pub fn new() -> Self {
-            Self {
-                map: SkillMap {
-                    version: Some("1.0.0".into()),
-                    last_modified: Some("2026-03-17".into()),
-                    ..SkillMap::default()
-                },
-                dirs: BTreeSet::new(),
-                contents: BTreeMap::new(),
-            }
-        }
-
-        /// Add a fully-wired skill: directory, content, map entry, and domain listing.
-        #[must_use]
-        pub fn with_skill(mut self, name: &str, domain: &str, frontmatter: &str) -> Self {
-            self.dirs.insert(name.into());
-            self.contents.insert(name.into(), format!("---\n{frontmatter}\n---\n\n# Body\n"));
-            self.map.skills.insert(name.into(), SkillEntry {
-                description: format!("{name} skill"),
-                domain: domain.into(),
-                repo: "test".into(),
-                concerns: vec![],
-                references: vec![],
-            });
-            self.map.domains.entry(domain.into()).or_default().push(name.into());
-            self
-        }
-
-        /// Append a concern to an existing skill's entry.
-        #[must_use]
-        pub fn with_concern(mut self, skill: &str, concern: &str) -> Self {
-            if let Some(entry) = self.map.skills.get_mut(skill) {
-                entry.concerns.push(concern.into());
-            }
-            self
-        }
-
-        /// Add a reference edge from one skill to another.
-        #[must_use]
-        pub fn with_reference(mut self, from: &str, to: &str) -> Self {
-            if let Some(entry) = self.map.skills.get_mut(from) {
-                entry.references.push(to.into());
-            }
-            self
-        }
-
-        /// Remove `version` and `lastModified` from the map.
-        #[must_use]
-        pub fn without_version(mut self) -> Self {
-            self.map.version = None;
-            self.map.last_modified = None;
-            self
-        }
-
-        /// Remove a skill from all domain listings (but keep the map entry).
-        #[must_use]
-        pub fn without_domain_entry(mut self, skill: &str) -> Self {
-            for members in self.map.domains.values_mut() {
-                members.retain(|m| m != skill);
-            }
-            self
-        }
-
-        /// Remove the simulated directory and content for a skill (keeps map entry).
-        #[must_use]
-        pub fn without_dir(mut self, skill: &str) -> Self {
-            self.dirs.remove(skill);
-            self.contents.remove(skill);
-            self
-        }
-
-        /// Override the raw `SKILL.md` content for a skill.
-        #[must_use]
-        pub fn with_raw_content(mut self, skill: &str, content: &str) -> Self {
-            self.contents.insert(skill.into(), content.into());
-            self
-        }
-    }
-
-    impl Default for MockSource {
-        fn default() -> Self { Self::new() }
-    }
-
-    impl SkillSource for MockSource {
-        fn skill_map(&self) -> anyhow::Result<SkillMap> { Ok(self.map.clone()) }
-        fn skill_dirs(&self) -> anyhow::Result<BTreeSet<String>> { Ok(self.dirs.clone()) }
-        fn skill_content(&self, name: &str) -> anyhow::Result<String> {
-            self.contents.get(name).cloned()
-                .ok_or_else(|| anyhow::anyhow!("skill {name} not found"))
-        }
-    }
-
-    /// Valid frontmatter string for a given skill name.
-    #[must_use]
-    pub fn valid_fm(name: &str) -> String {
-        format!("name: {name}\ndescription: A {name} skill\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use super::testing::*;
 
@@ -783,8 +298,6 @@ mod tests {
 
     #[test]
     fn orphan_map_entry() {
-        // Need a local skill to establish the local repo ("test"),
-        // so ghost (same repo, no dir) is flagged as orphan
         let source = MockSource::new()
             .with_skill("local", "meta", &valid_fm("local"))
             .with_skill("ghost", "meta", &valid_fm("ghost"))
@@ -798,7 +311,6 @@ mod tests {
     fn remote_repo_skill_not_flagged_as_orphan() {
         let mut source = MockSource::new()
             .with_skill("local-skill", "meta", &valid_fm("local-skill"));
-        // Add a map entry for a skill from a different repo (no local dir expected)
         source.map.skills.insert("remote-skill".into(), crate::model::SkillEntry {
             description: "A remote skill".into(),
             domain: "meta".into(),
@@ -808,7 +320,6 @@ mod tests {
         });
         source.map.domains.get_mut("meta").unwrap().push("remote-skill".into());
         let report = check_all(&source, &CheckConfig::default()).unwrap();
-        // remote-skill should NOT be flagged as orphan
         assert!(!report.errors.iter().any(|e| matches!(e,
             LintError::OrphanMapEntry { name, .. } if name == "remote-skill")));
     }
@@ -1129,12 +640,10 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
 
-        // Create skill directory
         let skill_dir = dir.path().join("test-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), format!("---\n{}\n---\n\n# Body\n", valid_fm("test-skill"))).unwrap();
 
-        // Create skill-map.d/ with config + domain file
         let map_dir = dir.path().join("skill-map.d");
         fs::create_dir_all(&map_dir).unwrap();
         fs::write(map_dir.join("config.yaml"), "version: \"2.0.0\"\nlastModified: \"2026-03-17\"\n").unwrap();
@@ -1497,9 +1006,6 @@ mod tests {
 
     #[test]
     fn reference_freshness_cascades() {
-        // c references b, b references a. a is newest.
-        // b should be flagged (a is newer), c should be flagged (b is older but doesn't matter —
-        // c only checks its direct references)
         let source = MockSource::new()
             .with_skill("a", "meta",
                 "name: a\ndescription: A\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-17\"")
@@ -1511,13 +1017,10 @@ mod tests {
             .with_reference("c", "b");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         let watch_errors = report.errors_of(CheckKind::References);
-        // b is flagged because a (2026-03-17) > b (2026-03-10)
         assert!(watch_errors.iter().any(|e| matches!(e,
             LintError::ReferenceNewer { skill, reference, .. }
             if skill == "b" && reference == "a"
         )));
-        // c is NOT flagged because b (2026-03-10) < c... wait, c is 2026-03-05 which is older than b 2026-03-10
-        // so c IS flagged because b (2026-03-10) > c (2026-03-05)
         assert!(watch_errors.iter().any(|e| matches!(e,
             LintError::ReferenceNewer { skill, reference, .. }
             if skill == "c" && reference == "b"
