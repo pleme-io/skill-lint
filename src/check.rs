@@ -526,8 +526,10 @@ impl FsSource<'_> {
         paths.sort();
 
         for path in paths {
-            let domain = path.file_stem().and_then(|s| s.to_str())
-                .unwrap_or("unknown").to_owned();
+            let domain = path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(ToOwned::to_owned)
+                .unwrap_or_default();
             let content = fs::read_to_string(&path)?;
             let domain_skills: BTreeMap<String, SkillEntry> =
                 serde_yaml_ng::from_str(&content)?;
