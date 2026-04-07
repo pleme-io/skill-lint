@@ -77,6 +77,22 @@ impl CheckContext {
         }
         Ok(Self { map, dir_names, map_names, contents })
     }
+
+    /// Build a map of skill name → `last_verified` date from parsed frontmatter.
+    ///
+    /// Skips skills whose content is missing or whose frontmatter cannot be parsed.
+    #[must_use]
+    pub fn last_verified_dates(&self) -> BTreeMap<String, String> {
+        self.dir_names
+            .iter()
+            .filter_map(|name| {
+                let content = self.contents.get(name)?;
+                let fm = model::parse_frontmatter(content).ok()?;
+                let date = fm.metadata?.last_verified?;
+                Some((name.clone(), date))
+            })
+            .collect()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -326,25 +342,15 @@ impl StalenessChecker {
 impl Checker for StalenessChecker {
     fn kind(&self) -> CheckKind { CheckKind::Staleness }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        for name in &ctx.dir_names {
-            let Some(content) = ctx.contents.get(name) else {
-                continue;
-            };
-            let Ok(fm) = model::parse_frontmatter(content) else {
-                continue;
-            };
-            let last_verified = fm
-                .metadata
-                .as_ref()
-                .and_then(|m| m.last_verified.as_deref());
-            if let Some(date) = last_verified
-                && let Some(age) = Self::days_since(&self.today, date)
+        let dates = ctx.last_verified_dates();
+        for (name, date) in &dates {
+            if let Some(age) = Self::days_since(&self.today, date)
                 && age > i64::from(self.max_days)
             {
                 errors.push(LintError::Stale {
                     kind: CheckKind::Staleness,
                     skill: name.clone(),
-                    last_verified: date.to_owned(),
+                    last_verified: date.clone(),
                     max_days: self.max_days,
                 });
             }
@@ -360,18 +366,8 @@ pub struct ReferencesFreshnessChecker;
 impl Checker for ReferencesFreshnessChecker {
     fn kind(&self) -> CheckKind { CheckKind::References }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
-        // Build a map of skill name → last_verified date
-        let mut dates: BTreeMap<String, String> = BTreeMap::new();
-        for name in &ctx.dir_names {
-            if let Some(content) = ctx.contents.get(name)
-                && let Ok(fm) = model::parse_frontmatter(content)
-                && let Some(date) = fm.metadata.and_then(|m| m.last_verified)
-            {
-                dates.insert(name.clone(), date);
-            }
-        }
+        let dates = ctx.last_verified_dates();
 
-        // For each skill, check if any reference has a newer last_verified
         for (name, entry) in &ctx.map.skills {
             let Some(skill_date) = dates.get(name) else { continue };
             for reference in &entry.references {
@@ -1296,6 +1292,21 @@ mod tests {
             .with_skill("s", "meta", &valid_fm("s"));
         let ctx = CheckContext::from_source(&source).unwrap();
         assert!(ctx.contents.get("s").unwrap().contains("name: s"));
+    }
+
+    // ─── CheckContext helpers ──────────────────────────────────────
+
+    #[test]
+    fn last_verified_dates_extracts_dates() {
+        let source = MockSource::new()
+            .with_skill("a", "meta",
+                "name: a\ndescription: A\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-01-01\"")
+            .with_skill("b", "meta",
+                "name: b\ndescription: B\nmetadata:\n  version: \"1.0.0\"");
+        let ctx = CheckContext::from_source(&source).unwrap();
+        let dates = ctx.last_verified_dates();
+        assert_eq!(dates.get("a").map(String::as_str), Some("2026-01-01"));
+        assert!(dates.get("b").is_none());
     }
 
     // ─── Staleness edge cases ─────────────────────────────────────
