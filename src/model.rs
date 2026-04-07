@@ -58,27 +58,47 @@ pub struct SkillMetadata {
     pub last_verified: Option<String>,
 }
 
+impl SkillFrontmatter {
+    /// Parse YAML frontmatter from a SKILL.md file.
+    ///
+    /// Expects `---\n...\n---\n` delimiters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frontmatter delimiters are missing or the YAML is invalid.
+    pub fn parse(content: &str) -> anyhow::Result<Self> {
+        let content = content.trim_start();
+        anyhow::ensure!(content.starts_with("---"), "missing opening --- delimiter");
+        let rest = &content[3..];
+        let end = rest
+            .find("\n---")
+            .ok_or_else(|| anyhow::anyhow!("missing closing --- delimiter"))?;
+        let yaml = &rest[..end];
+        Ok(serde_yaml_ng::from_str(yaml)?)
+    }
+}
+
 /// Parse YAML frontmatter from a SKILL.md file.
 ///
-/// Expects `---\n...\n---\n` delimiters.
+/// Convenience wrapper around [`SkillFrontmatter::parse`].
 ///
 /// # Errors
 ///
 /// Returns an error if the frontmatter delimiters are missing or the YAML is invalid.
 pub fn parse_frontmatter(content: &str) -> anyhow::Result<SkillFrontmatter> {
-    let content = content.trim_start();
-    anyhow::ensure!(content.starts_with("---"), "missing opening --- delimiter");
-    let rest = &content[3..];
-    let end = rest
-        .find("\n---")
-        .ok_or_else(|| anyhow::anyhow!("missing closing --- delimiter"))?;
-    let yaml = &rest[..end];
-    Ok(serde_yaml_ng::from_str(yaml)?)
+    SkillFrontmatter::parse(content)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_frontmatter_parse_method() {
+        let content = "---\nname: test\ndescription: A test\n---\n# Body";
+        let fm = SkillFrontmatter::parse(content).unwrap();
+        assert_eq!(fm.name.as_deref(), Some("test"));
+    }
 
     #[test]
     fn parse_valid_frontmatter() {
