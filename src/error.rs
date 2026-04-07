@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use thiserror::Error;
 
@@ -26,6 +27,27 @@ impl fmt::Display for CheckKind {
         }
     }
 }
+
+impl FromStr for CheckKind {
+    type Err = ParseCheckKindError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "version" => Ok(Self::Version),
+            "sync" => Ok(Self::Sync),
+            "frontmatter" => Ok(Self::Frontmatter),
+            "map-integrity" => Ok(Self::MapIntegrity),
+            "staleness" => Ok(Self::Staleness),
+            "references" => Ok(Self::References),
+            _ => Err(ParseCheckKindError(s.to_owned())),
+        }
+    }
+}
+
+/// Error returned when parsing an invalid [`CheckKind`] string.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("unknown check kind: '{0}'")]
+pub struct ParseCheckKindError(String);
 
 /// A single validation error produced by a checker.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -213,5 +235,28 @@ mod tests {
         let k1 = CheckKind::Version;
         let k2 = k1;
         assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn check_kind_display_fromstr_roundtrip() {
+        let kinds = [
+            CheckKind::Version,
+            CheckKind::Sync,
+            CheckKind::Frontmatter,
+            CheckKind::MapIntegrity,
+            CheckKind::Staleness,
+            CheckKind::References,
+        ];
+        for kind in kinds {
+            let s = kind.to_string();
+            let parsed: CheckKind = s.parse().unwrap();
+            assert_eq!(parsed, kind);
+        }
+    }
+
+    #[test]
+    fn check_kind_fromstr_invalid() {
+        let err = "bogus".parse::<CheckKind>().unwrap_err();
+        assert_eq!(err.to_string(), "unknown check kind: 'bogus'");
     }
 }
