@@ -49,9 +49,12 @@ pub struct SkillFrontmatter {
     pub metadata: Option<SkillMetadata>,
 }
 
+/// Version and recency metadata embedded in frontmatter.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 pub struct SkillMetadata {
+    /// Semantic version of the skill document.
     pub version: Option<String>,
+    /// ISO-8601 date when the skill was last reviewed.
     pub last_verified: Option<String>,
 }
 

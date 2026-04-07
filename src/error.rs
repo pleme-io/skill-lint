@@ -26,6 +26,7 @@ impl fmt::Display for CheckKind {
     }
 }
 
+/// A single validation error produced by a checker.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum LintError {
     #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
@@ -107,6 +108,7 @@ pub enum LintError {
 }
 
 impl LintError {
+    /// Extract the [`CheckKind`] that produced this error.
     #[must_use]
     pub fn kind(&self) -> CheckKind {
         match self {

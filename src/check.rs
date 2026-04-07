@@ -40,15 +40,21 @@ pub trait SkillSource {
 
 /// A single composable check. Implement to add custom validation.
 pub trait Checker {
+    /// The check category this checker belongs to.
     fn kind(&self) -> CheckKind;
+    /// Run validation against the shared context, appending any errors found.
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>);
 }
 
 /// Shared context built once, passed to all checkers.
 pub struct CheckContext {
+    /// The deserialized skill map.
     pub map: SkillMap,
+    /// Skill directory names found on disk.
     pub dir_names: BTreeSet<String>,
+    /// Skill names present in the map.
     pub map_names: BTreeSet<String>,
+    /// `SKILL.md` contents keyed by skill name.
     pub contents: BTreeMap<String, String>,
 }
 
@@ -80,10 +86,15 @@ impl CheckContext {
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CheckConfig {
+    /// Enable version/`lastModified` presence check.
     pub version: bool,
+    /// Enable sync check (dir ↔ map entry parity).
     pub sync: bool,
+    /// Enable frontmatter validation.
     pub frontmatter: bool,
+    /// Enable map integrity (references, domains).
     pub map_integrity: bool,
+    /// Enable duplicate-concern detection.
     pub duplicate_concerns: bool,
     /// Staleness threshold in days. `None` disables the check.
     pub max_age_days: Option<u32>,
@@ -109,6 +120,7 @@ impl Default for CheckConfig {
 // Built-in checkers
 // ═══════════════════════════════════════════════════════════════════
 
+/// Validates that the skill map contains `version` and `lastModified` fields.
 pub struct VersionChecker;
 impl Checker for VersionChecker {
     fn kind(&self) -> CheckKind { CheckKind::Version }
@@ -154,6 +166,7 @@ impl Checker for SyncChecker {
     }
 }
 
+/// Validates `SKILL.md` frontmatter: required fields, name/dir consistency.
 pub struct FrontmatterChecker;
 impl Checker for FrontmatterChecker {
     fn kind(&self) -> CheckKind { CheckKind::Frontmatter }
@@ -218,6 +231,7 @@ impl Checker for FrontmatterChecker {
     }
 }
 
+/// Validates map structural integrity: references, domain index, duplicate concerns.
 pub struct MapIntegrityChecker;
 impl Checker for MapIntegrityChecker {
     fn kind(&self) -> CheckKind { CheckKind::MapIntegrity }
@@ -285,8 +299,11 @@ impl Checker for MapIntegrityChecker {
     }
 }
 
+/// Flags skills whose `last_verified` date exceeds a configurable threshold.
 pub struct StalenessChecker {
+    /// Maximum allowed age in days.
     pub max_days: u32,
+    /// Reference date (`YYYY-MM-DD`) used as "today".
     pub today: String,
 }
 
@@ -376,20 +393,26 @@ impl Checker for ReferencesFreshnessChecker {
 // Report
 // ═══════════════════════════════════════════════════════════════════
 
+/// Aggregated lint results from a check run.
 pub struct Report {
+    /// All errors discovered during the run.
     pub errors: Vec<LintError>,
+    /// Number of skill directories examined.
     pub skills_checked: usize,
 }
 
 impl Report {
+    /// Create an empty report for the given number of checked skills.
     #[must_use]
     pub fn new(skills_checked: usize) -> Self {
         Self { errors: Vec::new(), skills_checked }
     }
 
+    /// Returns `true` when no errors were found.
     #[must_use]
     pub fn is_ok(&self) -> bool { self.errors.is_empty() }
 
+    /// Filter errors by [`CheckKind`].
     #[must_use]
     pub fn errors_of(&self, kind: CheckKind) -> Vec<&LintError> {
         self.errors.iter().filter(|e| e.kind() == kind).collect()
@@ -465,7 +488,9 @@ pub fn check_path(skills_dir: &Path) -> anyhow::Result<Report> {
 // Filesystem source
 // ═══════════════════════════════════════════════════════════════════
 
+/// Filesystem-backed [`SkillSource`] that reads skills and maps from disk.
 pub struct FsSource<'a> {
+    /// Root directory containing skill subdirectories.
     pub skills_dir: &'a Path,
     /// Override for skill-map.d/ location. If None, searches:
     /// 1. {skills_dir}/skill-map.d/
@@ -588,12 +613,16 @@ pub mod testing {
     /// In-memory skill source for deterministic testing without filesystem.
     /// Use the builder methods to construct test scenarios.
     pub struct MockSource {
+        /// The in-memory skill map.
         pub map: SkillMap,
+        /// Simulated directory names.
         pub dirs: BTreeSet<String>,
+        /// Simulated `SKILL.md` contents keyed by skill name.
         pub contents: BTreeMap<String, String>,
     }
 
     impl MockSource {
+        /// Create a source pre-loaded with version/`lastModified` but no skills.
         #[must_use]
         pub fn new() -> Self {
             Self {
@@ -607,6 +636,7 @@ pub mod testing {
             }
         }
 
+        /// Add a fully-wired skill: directory, content, map entry, and domain listing.
         #[must_use]
         pub fn with_skill(mut self, name: &str, domain: &str, frontmatter: &str) -> Self {
             self.dirs.insert(name.into());
@@ -622,6 +652,7 @@ pub mod testing {
             self
         }
 
+        /// Append a concern to an existing skill's entry.
         #[must_use]
         pub fn with_concern(mut self, skill: &str, concern: &str) -> Self {
             if let Some(entry) = self.map.skills.get_mut(skill) {
@@ -630,6 +661,7 @@ pub mod testing {
             self
         }
 
+        /// Add a reference edge from one skill to another.
         #[must_use]
         pub fn with_reference(mut self, from: &str, to: &str) -> Self {
             if let Some(entry) = self.map.skills.get_mut(from) {
@@ -638,6 +670,7 @@ pub mod testing {
             self
         }
 
+        /// Remove `version` and `lastModified` from the map.
         #[must_use]
         pub fn without_version(mut self) -> Self {
             self.map.version = None;
@@ -645,6 +678,7 @@ pub mod testing {
             self
         }
 
+        /// Remove a skill from all domain listings (but keep the map entry).
         #[must_use]
         pub fn without_domain_entry(mut self, skill: &str) -> Self {
             for members in self.map.domains.values_mut() {
@@ -653,6 +687,7 @@ pub mod testing {
             self
         }
 
+        /// Remove the simulated directory and content for a skill (keeps map entry).
         #[must_use]
         pub fn without_dir(mut self, skill: &str) -> Self {
             self.dirs.remove(skill);
@@ -660,6 +695,7 @@ pub mod testing {
             self
         }
 
+        /// Override the raw `SKILL.md` content for a skill.
         #[must_use]
         pub fn with_raw_content(mut self, skill: &str, content: &str) -> Self {
             self.contents.insert(skill.into(), content.into());
