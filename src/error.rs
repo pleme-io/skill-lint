@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Which check phase produced the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CheckKind {
     Version,
     Sync,
@@ -28,6 +29,7 @@ impl fmt::Display for CheckKind {
 
 /// A single validation error produced by a checker.
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LintError {
     #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
     MissingMapEntry { kind: CheckKind, name: String },
