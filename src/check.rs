@@ -12,8 +12,25 @@ use crate::model::{self, SkillEntry, SkillMap};
 /// Abstraction over skill data sources. Implement this for custom
 /// backends (filesystem, in-memory, S3, archives).
 pub trait SkillSource {
+    /// Load the merged skill map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backing store is unreadable or malformed.
     fn skill_map(&self) -> anyhow::Result<SkillMap>;
+
+    /// List skill directory names present in the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory listing fails.
     fn skill_dirs(&self) -> anyhow::Result<BTreeSet<String>>;
+
+    /// Read the `SKILL.md` content for a single skill.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the skill content cannot be read.
     fn skill_content(&self, name: &str) -> anyhow::Result<String>;
 }
 
@@ -61,6 +78,7 @@ impl CheckContext {
 
 /// Configuration for which checks to run.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CheckConfig {
     pub version: bool,
     pub sync: bool,
@@ -126,11 +144,10 @@ impl Checker for SyncChecker {
             if ctx.dir_names.contains(name) {
                 continue;
             }
-            // If this skill's repo is NOT one of the local repos, it's expected remote
-            if let Some(entry) = ctx.map.skills.get(name) {
-                if !local_repos.contains(entry.repo.as_str()) {
-                    continue;
-                }
+            if let Some(entry) = ctx.map.skills.get(name)
+                && !local_repos.contains(entry.repo.as_str())
+            {
+                continue;
             }
             errors.push(LintError::OrphanMapEntry { kind: CheckKind::Sync, name: name.clone() });
         }
@@ -142,20 +159,17 @@ impl Checker for FrontmatterChecker {
     fn kind(&self) -> CheckKind { CheckKind::Frontmatter }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
         for name in &ctx.dir_names {
-            let content = match ctx.contents.get(name) {
-                Some(c) => c,
-                None => continue,
+            let Some(content) = ctx.contents.get(name) else {
+                continue;
             };
 
-            let fm = match model::parse_frontmatter(content) {
-                Ok(fm) => fm,
-                Err(_) => {
-                    errors.push(LintError::MissingFrontmatter {
-                        kind: CheckKind::Frontmatter, skill: name.clone(),
-                        field: "frontmatter (parse error)".into(),
-                    });
-                    continue;
-                }
+            let Ok(fm) = model::parse_frontmatter(content) else {
+                errors.push(LintError::MissingFrontmatter {
+                    kind: CheckKind::Frontmatter,
+                    skill: name.clone(),
+                    field: "frontmatter (parse error)".into(),
+                });
+                continue;
             };
 
             match &fm.name {
@@ -240,15 +254,16 @@ impl Checker for MapIntegrityChecker {
             }
         }
 
-        // Skill's domain field must match its index listing
         for (name, entry) in &ctx.map.skills {
-            if let Some(listed_domain) = domain_of_skill.get(name) {
-                if *listed_domain != entry.domain {
-                    errors.push(LintError::DomainMismatch {
-                        kind: CheckKind::MapIntegrity, skill: name.clone(),
-                        found: entry.domain.clone(), expected: listed_domain.clone(),
-                    });
-                }
+            if let Some(listed_domain) = domain_of_skill.get(name)
+                && *listed_domain != entry.domain
+            {
+                errors.push(LintError::DomainMismatch {
+                    kind: CheckKind::MapIntegrity,
+                    skill: name.clone(),
+                    found: entry.domain.clone(),
+                    expected: listed_domain.clone(),
+                });
             }
         }
 
@@ -294,28 +309,26 @@ impl Checker for StalenessChecker {
     fn kind(&self) -> CheckKind { CheckKind::Staleness }
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
         for name in &ctx.dir_names {
-            let content = match ctx.contents.get(name) {
-                Some(c) => c,
-                None => continue,
+            let Some(content) = ctx.contents.get(name) else {
+                continue;
             };
-            let fm = match model::parse_frontmatter(content) {
-                Ok(fm) => fm,
-                Err(_) => continue,
+            let Ok(fm) = model::parse_frontmatter(content) else {
+                continue;
             };
-            let last_verified = fm.metadata
+            let last_verified = fm
+                .metadata
                 .as_ref()
                 .and_then(|m| m.last_verified.as_deref());
-            if let Some(date) = last_verified {
-                if let Some(age) = Self::days_since(&self.today, date) {
-                    if age > i64::from(self.max_days) {
-                        errors.push(LintError::Stale {
-                            kind: CheckKind::Staleness,
-                            skill: name.clone(),
-                            last_verified: date.to_owned(),
-                            max_days: self.max_days,
-                        });
-                    }
-                }
+            if let Some(date) = last_verified
+                && let Some(age) = Self::days_since(&self.today, date)
+                && age > i64::from(self.max_days)
+            {
+                errors.push(LintError::Stale {
+                    kind: CheckKind::Staleness,
+                    skill: name.clone(),
+                    last_verified: date.to_owned(),
+                    max_days: self.max_days,
+                });
             }
         }
     }
@@ -332,12 +345,11 @@ impl Checker for ReferencesFreshnessChecker {
         // Build a map of skill name → last_verified date
         let mut dates: BTreeMap<String, String> = BTreeMap::new();
         for name in &ctx.dir_names {
-            if let Some(content) = ctx.contents.get(name) {
-                if let Ok(fm) = model::parse_frontmatter(content) {
-                    if let Some(date) = fm.metadata.and_then(|m| m.last_verified) {
-                        dates.insert(name.clone(), date);
-                    }
-                }
+            if let Some(content) = ctx.contents.get(name)
+                && let Ok(fm) = model::parse_frontmatter(content)
+                && let Some(date) = fm.metadata.and_then(|m| m.last_verified)
+            {
+                dates.insert(name.clone(), date);
             }
         }
 
@@ -430,8 +442,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             CheckKind::Sync => config.sync,
             CheckKind::Frontmatter => config.frontmatter,
             CheckKind::MapIntegrity => config.map_integrity || config.duplicate_concerns,
-            CheckKind::Staleness => true, // already gated by max_age_days
-            CheckKind::References => true,  // always on — pure data check
+            CheckKind::Staleness | CheckKind::References => true,
         };
         if enabled {
             checker.check(&ctx, &mut report.errors);
@@ -464,7 +475,7 @@ pub struct FsSource<'a> {
 }
 
 impl FsSource<'_> {
-    fn load_split_map(&self, map_dir: &Path) -> anyhow::Result<SkillMap> {
+    fn load_split_map(map_dir: &Path) -> anyhow::Result<SkillMap> {
         use crate::model::SkillMapConfig;
 
         let config_path = map_dir.join("config.yaml");
@@ -516,20 +527,20 @@ impl SkillSource for FsSource<'_> {
         // 1. Explicit override
         if let Some(dir) = self.map_dir_override {
             anyhow::ensure!(dir.is_dir(), "map-dir {} does not exist", dir.display());
-            return self.load_split_map(dir);
+            return Self::load_split_map(dir);
         }
 
         // 2. skill-map.d/ inside skills dir
         let map_dir = self.skills_dir.join("skill-map.d");
         if map_dir.is_dir() {
-            return self.load_split_map(&map_dir);
+            return Self::load_split_map(&map_dir);
         }
 
         // 3. skill-map.d/ as sibling of skills dir
         if let Some(parent) = self.skills_dir.parent() {
             let sibling = parent.join("skill-map.d");
             if sibling.is_dir() {
-                return self.load_split_map(&sibling);
+                return Self::load_split_map(&sibling);
             }
         }
 
@@ -568,7 +579,11 @@ impl SkillSource for FsSource<'_> {
 // ═══════════════════════════════════════════════════════════════════
 
 pub mod testing {
-    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use crate::model::{SkillEntry, SkillMap};
+
+    use super::SkillSource;
 
     /// In-memory skill source for deterministic testing without filesystem.
     /// Use the builder methods to construct test scenarios.
