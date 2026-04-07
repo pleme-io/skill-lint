@@ -47,6 +47,7 @@ pub trait Checker {
 }
 
 /// Shared context built once, passed to all checkers.
+#[must_use]
 pub struct CheckContext {
     /// The deserialized skill map.
     pub map: SkillMap,
@@ -394,6 +395,7 @@ impl Checker for ReferencesFreshnessChecker {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Aggregated lint results from a check run.
+#[must_use]
 pub struct Report {
     /// All errors discovered during the run.
     pub errors: Vec<LintError>,
