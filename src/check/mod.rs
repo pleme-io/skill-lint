@@ -206,9 +206,25 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             format!("{y}-{m:02}-{d:02}")
         });
         checkers.push(Box::new(StalenessChecker { max_days, today }));
-    }
 
-    checkers.push(Box::new(ReferencesFreshnessChecker));
+        // References-FRESHNESS belongs to the same family as staleness, not to
+        // the structural checks: it reads `last_verified` and asks "was the
+        // target re-verified more recently than the referrer?" — a question
+        // only meaningful once the caller has opted into caring about
+        // freshness. Gating it here (rather than always-on) lets a consumer
+        // run the STRUCTURAL suite alone — sync, frontmatter, map-integrity,
+        // version — all of which have objective right answers a machine can
+        // fix, and gate CI on those.
+        //
+        // Why that split matters: freshness cannot be honestly repaired by a
+        // machine. Clearing a staleness or reference-newer finding means a
+        // human actually re-read the skill; a bot bumping the date to go green
+        // manufactures a false claim, which is worse than the stale one it
+        // replaced. A CI gate that forces that bump is a false-claim factory.
+        // So freshness is opt-in and advisory; structure is always-on and
+        // gateable.
+        checkers.push(Box::new(ReferencesFreshnessChecker));
+    }
 
     for checker in &checkers {
         let enabled = match checker.kind() {
@@ -666,7 +682,13 @@ mod tests {
             .with_skill("new-skill", "meta",
                 "name: new-skill\ndescription: New\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-15\"")
             .with_reference("old-skill", "new-skill");
-        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let report = check_all(&source, &CheckConfig {
+            // Reference-freshness is a FRESHNESS check — opt in, as a real
+            // consumer must. Default has max_age_days: None (structure only).
+            max_age_days: Some(90),
+            ..CheckConfig::default()
+        })
+        .unwrap();
         assert!(report.errors.iter().any(|e| matches!(e,
             LintError::ReferenceNewer { skill, reference, .. }
             if skill == "old-skill" && reference == "new-skill"
@@ -1015,7 +1037,13 @@ mod tests {
                 "name: c\ndescription: C\nmetadata:\n  version: \"1.0.0\"\n  last_verified: \"2026-03-05\"")
             .with_reference("b", "a")
             .with_reference("c", "b");
-        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let report = check_all(&source, &CheckConfig {
+            // Reference-freshness is a FRESHNESS check — opt in, as a real
+            // consumer must. Default has max_age_days: None (structure only).
+            max_age_days: Some(90),
+            ..CheckConfig::default()
+        })
+        .unwrap();
         let watch_errors = report.errors_of(CheckKind::References);
         assert!(watch_errors.iter().any(|e| matches!(e,
             LintError::ReferenceNewer { skill, reference, .. }
