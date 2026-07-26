@@ -143,17 +143,47 @@ fn check_reports_error_count() {
 fn check_passes_on_real_skills() {
     // Run against the actual blackmatter-pleme skills if available.
     // Uses SKILL_LINT_REAL_SKILLS env var or default path.
+    //
+    // This gate used to be `skills_dir.join("skill-map.yaml").exists()` — the
+    // real repo carries a split `skill-map.d/`, so the condition was never
+    // true and the test never once executed. That is the same defect this
+    // tool now refuses in its own subject: a check that reports success
+    // without checking anything. Two rules keep it closed:
+    //
+    //   1. Gate on the FIXTURE being absent, never on where the map happens
+    //      to live. Locating the map is the production lookup's job — the CLI
+    //      below performs it. A second copy of that resolution here is what
+    //      drifted out from under the real one in the first place.
+    //   2. When the fixture IS present, run and assert. A missing or
+    //      unresolvable map is then a failure, not a silent skip.
     let default = format!(
         "{}/code/github/pleme-io/blackmatter-pleme/skills",
         std::env::var("HOME").unwrap_or_default()
     );
     let skills_dir =
         std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_SKILLS").unwrap_or(default));
-    if skills_dir.join("skill-map.yaml").exists() {
-        Command::cargo_bin("skill-lint")
-            .unwrap()
-            .args(["check", "--skills-dir", skills_dir.to_str().unwrap()])
-            .assert()
-            .success();
+
+    if !skills_dir.is_dir() {
+        // Legitimate skip: a machine without blackmatter-pleme checked out.
+        // Announced, not silent — visible under `cargo test -- --nocapture`
+        // (or `--show-output`), so a skip can never hide as a pass again.
+        eprintln!(
+            "SKIP check_passes_on_real_skills: no fixture at {} \
+             (set SKILL_LINT_REAL_SKILLS to point at a real skills dir)",
+            skills_dir.display()
+        );
+        return;
     }
+
+    eprintln!("RUN check_passes_on_real_skills against {}", skills_dir.display());
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", skills_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        // Not merely exit-0: assert it actually linted something. Without this
+        // the test would have gone green on the very "0 skills" vacuous pass
+        // the DiscoveryChecker now forbids.
+        .stderr(predicate::str::contains("all checks passed"))
+        .stderr(predicate::str::contains("(0 skills)").not());
 }
