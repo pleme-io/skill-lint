@@ -65,6 +65,48 @@ fn check_fails_on_missing_map() {
 }
 
 #[test]
+fn check_fails_when_no_skills_are_discovered() {
+    // The seal: a run that lints nothing must never report success. Before
+    // this, `skill-lint check` from a root whose skills live elsewhere printed
+    // "all checks passed (0 skills)" and exited 0 — a gate that validates
+    // nothing while manufacturing confidence.
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("skill-map.yaml"),
+        "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains: {}\nskills: {}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no skills found"))
+        .stderr(predicate::str::contains(dir.path().to_str().unwrap()));
+}
+
+#[test]
+fn check_discovers_nested_skills_dir_from_repo_root() {
+    // The bare invocation from a repo root finds ./skills — same verdict as
+    // pointing at it explicitly.
+    let root = TempDir::new().unwrap();
+    let skills = root.path().join("skills");
+    fs::create_dir_all(&skills).unwrap();
+    valid_skill(&skills, "alpha");
+    valid_map(root.path(), &[("alpha", "meta")]);
+
+    for target in [root.path(), skills.as_path()] {
+        Command::cargo_bin("skill-lint")
+            .unwrap()
+            .args(["check", "--skills-dir", target.to_str().unwrap()])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("all checks passed (1 skills)"));
+    }
+}
+
+#[test]
 fn check_fails_on_orphan_skill() {
     let dir = TempDir::new().unwrap();
     valid_skill(dir.path(), "alpha");

@@ -9,8 +9,8 @@ use crate::error::{CheckKind, LintError};
 use crate::model::{self, SkillMap};
 
 pub use checkers::{
-    FrontmatterChecker, MapIntegrityChecker, ReferencesFreshnessChecker, StalenessChecker,
-    SyncChecker, VersionChecker,
+    DiscoveryChecker, FrontmatterChecker, MapIntegrityChecker, ReferencesFreshnessChecker,
+    StalenessChecker, SyncChecker, VersionChecker,
 };
 pub use fs_source::FsSource;
 
@@ -41,6 +41,12 @@ pub trait SkillSource {
     ///
     /// Returns an error if the skill content cannot be read.
     fn skill_content(&self, name: &str) -> anyhow::Result<String>;
+
+    /// Human-readable description of where skills were looked for.
+    ///
+    /// Reported when discovery finds nothing, so the operator sees which root
+    /// was actually searched rather than a bare "0 skills".
+    fn origin(&self) -> String { "<in-memory source>".to_owned() }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -66,6 +72,8 @@ pub struct CheckContext {
     pub map_names: BTreeSet<String>,
     /// `SKILL.md` contents keyed by skill name.
     pub contents: BTreeMap<String, String>,
+    /// Where the source looked for skills — reported when discovery is empty.
+    pub origin: String,
 }
 
 impl CheckContext {
@@ -84,7 +92,7 @@ impl CheckContext {
                 source.skill_content(name).ok().map(|c| (name.clone(), c))
             })
             .collect();
-        Ok(Self { map, dir_names, map_names, contents })
+        Ok(Self { map, dir_names, map_names, contents, origin: source.origin() })
     }
 
     /// Build a map of skill name → `last_verified` date from parsed frontmatter.
@@ -186,6 +194,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
     let mut report = Report::new(ctx.dir_names.len());
 
     let mut checkers: Vec<Box<dyn Checker>> = vec![
+        Box::new(DiscoveryChecker),
         Box::new(VersionChecker),
         Box::new(SyncChecker),
         Box::new(FrontmatterChecker),
@@ -275,12 +284,104 @@ mod tests {
         assert_eq!(report.skills_checked, 2);
     }
 
+    // ─── Discovery ────────────────────────────────────────────────
+
     #[test]
-    fn empty_skills_directory() {
+    fn empty_skills_directory_is_an_error() {
+        // A run that lints zero skills is a vacuous pass — it reports success
+        // having validated nothing. That is worse than no gate at all, so it
+        // must fail.
         let source = MockSource::new();
         let report = check_all(&source, &CheckConfig::default()).unwrap();
-        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        assert!(!report.is_ok(), "zero-skill run must not pass");
         assert_eq!(report.skills_checked, 0);
+        assert!(report.errors.iter().any(|e| matches!(e, LintError::NoSkillsFound { .. })));
+    }
+
+    #[test]
+    fn discovery_checker_independently() {
+        let empty = CheckContext::from_source(&MockSource::new()).unwrap();
+        let mut errors = Vec::new();
+        DiscoveryChecker.check(&empty, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind(), CheckKind::Discovery);
+
+        let populated = CheckContext::from_source(
+            &MockSource::new().with_skill("a", "meta", &valid_fm("a")),
+        )
+        .unwrap();
+        let mut errors = Vec::new();
+        DiscoveryChecker.check(&populated, &mut errors);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+    }
+
+    #[test]
+    fn discovery_error_names_the_searched_root() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("skill-map.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains: {}\nskills: {}\n"
+        ).unwrap();
+        let report = check_path(dir.path()).unwrap();
+        let msg = report.errors.iter()
+            .find(|e| matches!(e, LintError::NoSkillsFound { .. }))
+            .expect("expected NoSkillsFound")
+            .to_string();
+        assert!(msg.contains(dir.path().to_str().unwrap()), "path missing from: {msg}");
+        assert!(msg.contains("SKILL.md"), "expectation missing from: {msg}");
+    }
+
+    #[test]
+    fn nested_skills_dir_is_discovered_from_repo_root() {
+        // The bare invocation from a repo root: skills live in ./skills, the
+        // map at ./skill-map.d. Must find them, not silently find nothing.
+        use tempfile::TempDir;
+        let root = TempDir::new().unwrap();
+        let skills = root.path().join("skills");
+        let skill_dir = skills.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"),
+            format!("---\n{}\n---\n\n# Body\n", valid_fm("test-skill"))).unwrap();
+
+        let map_dir = root.path().join("skill-map.d");
+        fs::create_dir_all(&map_dir).unwrap();
+        fs::write(map_dir.join("config.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\n").unwrap();
+        fs::write(map_dir.join("meta.yaml"),
+            "test-skill:\n  description: A test\n  domain: meta\n  repo: test\n").unwrap();
+
+        // Bare form (root) and explicit form (root/skills) must agree.
+        let from_root = check_path(root.path()).unwrap();
+        assert!(from_root.is_ok(), "errors: {:?}", from_root.errors);
+        assert_eq!(from_root.skills_checked, 1);
+
+        let from_skills = check_path(&skills).unwrap();
+        assert!(from_skills.is_ok(), "errors: {:?}", from_skills.errors);
+        assert_eq!(from_skills.skills_checked, 1);
+    }
+
+    #[test]
+    fn explicit_skills_dir_is_never_redirected() {
+        // A dir that already holds skills is used as-is, even when it also
+        // contains a `skills/` subdirectory — the fallback is a last resort,
+        // never an override of what the caller asked for.
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("outer");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("SKILL.md"),
+            format!("---\n{}\n---\n", valid_fm("outer"))).unwrap();
+        let decoy = dir.path().join("skills").join("inner");
+        fs::create_dir_all(&decoy).unwrap();
+        fs::write(decoy.join("SKILL.md"),
+            format!("---\n{}\n---\n", valid_fm("inner"))).unwrap();
+        fs::write(dir.path().join("skill-map.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains:\n  meta: [outer]\nskills:\n  outer:\n    description: A test\n    domain: meta\n    repo: test\n"
+        ).unwrap();
+
+        let report = check_path(dir.path()).unwrap();
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        assert_eq!(report.skills_checked, 1);
     }
 
     // ─── Version checks ──────────────────────────────────────────
@@ -953,8 +1054,12 @@ mod tests {
             "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains: {}\nskills: {}\n"
         ).unwrap();
         let report = check_path(dir.path()).unwrap();
-        assert!(report.is_ok());
+        // A directory without SKILL.md is not a skill — hence 0 discovered —
+        // and discovering 0 is itself the (only) error.
         assert_eq!(report.skills_checked, 0);
+        assert!(!report.is_ok());
+        assert_eq!(report.errors_of(CheckKind::Discovery).len(), 1);
+        assert_eq!(report.errors.len(), 1, "unexpected extras: {:?}", report.errors);
     }
 
     #[test]

@@ -1,2 +1,4 @@
 target/
 Cargo.build-spec.json
+result
+result-*

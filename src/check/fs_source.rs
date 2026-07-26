@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::{SkillEntry, SkillMap};
 
@@ -18,6 +18,40 @@ pub struct FsSource<'a> {
 }
 
 impl FsSource<'_> {
+    /// Does this directory directly contain at least one `<name>/SKILL.md`?
+    fn holds_skills(dir: &Path) -> bool {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.path().join("SKILL.md").is_file())
+    }
+
+    /// The directory actually searched for skills.
+    ///
+    /// `--skills-dir` defaults to `.`, but a repo conventionally keeps its
+    /// skills one level down in `skills/`. When the given root holds no
+    /// `<name>/SKILL.md` and a `skills/` subdirectory does, descend into it —
+    /// so the bare invocation from a repo root, which is what every human and
+    /// agent reaches for first, finds the skills instead of silently finding
+    /// none.
+    ///
+    /// This is ONE named convention, deliberately not general recursion:
+    /// arbitrary descent would sweep in `.git`, `node_modules`, and the
+    /// nested reference directories inside skills themselves, and would
+    /// require the source to key skills by path rather than by name. An
+    /// explicit `--skills-dir` that already holds skills is never redirected,
+    /// so existing callers behave identically.
+    fn effective_root(&self) -> PathBuf {
+        if !Self::holds_skills(self.skills_dir) {
+            let nested = self.skills_dir.join("skills");
+            if Self::holds_skills(&nested) {
+                return nested;
+            }
+        }
+        self.skills_dir.to_path_buf()
+    }
+
     fn load_split_map(map_dir: &Path) -> anyhow::Result<SkillMap> {
         use crate::model::SkillMapConfig;
 
@@ -71,36 +105,46 @@ impl SkillSource for FsSource<'_> {
             return Self::load_split_map(dir);
         }
 
-        let map_dir = self.skills_dir.join("skill-map.d");
+        let root = self.effective_root();
+
+        let map_dir = root.join("skill-map.d");
         if map_dir.is_dir() {
             return Self::load_split_map(&map_dir);
         }
 
-        if let Some(parent) = self.skills_dir.parent() {
+        if let Some(parent) = root.parent() {
             let sibling = parent.join("skill-map.d");
             if sibling.is_dir() {
                 return Self::load_split_map(&sibling);
             }
         }
 
-        let path = self.skills_dir.join("skill-map.yaml");
+        let mut path = root.join("skill-map.yaml");
+        // Sibling fallback, symmetric with the skill-map.d/ search above: when
+        // discovery descended into `skills/`, a legacy map one level up is
+        // still this root's map.
+        if !path.exists()
+            && let Some(parent) = root.parent()
+            && parent.join("skill-map.yaml").exists()
+        {
+            path = parent.join("skill-map.yaml");
+        }
         anyhow::ensure!(
             path.exists(),
             "skill-map.d/ or skill-map.yaml not found for {}",
-            self.skills_dir.display()
+            root.display()
         );
         let content = fs::read_to_string(&path)?;
         Ok(serde_yaml_ng::from_str(&content)?)
     }
 
     fn skill_dirs(&self) -> anyhow::Result<BTreeSet<String>> {
+        let root = self.effective_root();
         let mut names = BTreeSet::new();
-        for entry in fs::read_dir(self.skills_dir)? {
+        for entry in fs::read_dir(&root)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if entry.file_type()?.is_dir()
-                && self.skills_dir.join(&name).join("SKILL.md").exists()
-            {
+            if entry.file_type()?.is_dir() && root.join(&name).join("SKILL.md").exists() {
                 names.insert(name);
             }
         }
@@ -108,6 +152,10 @@ impl SkillSource for FsSource<'_> {
     }
 
     fn skill_content(&self, name: &str) -> anyhow::Result<String> {
-        Ok(fs::read_to_string(self.skills_dir.join(name).join("SKILL.md"))?)
+        Ok(fs::read_to_string(self.effective_root().join(name).join("SKILL.md"))?)
+    }
+
+    fn origin(&self) -> String {
+        self.effective_root().display().to_string()
     }
 }

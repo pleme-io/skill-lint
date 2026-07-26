@@ -7,6 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CheckKind {
+    Discovery,
     Version,
     Sync,
     Frontmatter,
@@ -18,6 +19,7 @@ pub enum CheckKind {
 impl fmt::Display for CheckKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Discovery => write!(f, "discovery"),
             Self::Version => write!(f, "version"),
             Self::Sync => write!(f, "sync"),
             Self::Frontmatter => write!(f, "frontmatter"),
@@ -33,6 +35,7 @@ impl FromStr for CheckKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "discovery" => Ok(Self::Discovery),
             "version" => Ok(Self::Version),
             "sync" => Ok(Self::Sync),
             "frontmatter" => Ok(Self::Frontmatter),
@@ -53,6 +56,12 @@ pub struct ParseCheckKindError(String);
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LintError {
+    /// Discovery found nothing to lint. A run that validates zero skills is a
+    /// vacuous pass — it manufactures confidence while checking nothing — so
+    /// it is an error, never a success.
+    #[error("[{kind}] no skills found under '{searched}' — expected subdirectories each containing a SKILL.md (pass --skills-dir to point at the right root)")]
+    NoSkillsFound { kind: CheckKind, searched: String },
+
     #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
     MissingMapEntry { kind: CheckKind, name: String },
 
@@ -136,7 +145,8 @@ impl LintError {
     #[must_use]
     pub fn kind(&self) -> CheckKind {
         match self {
-            Self::MissingMapEntry { kind, .. }
+            Self::NoSkillsFound { kind, .. }
+            | Self::MissingMapEntry { kind, .. }
             | Self::OrphanMapEntry { kind, .. }
             | Self::MissingFrontmatter { kind, .. }
             | Self::NameMismatch { kind, .. }
@@ -159,6 +169,7 @@ mod tests {
 
     #[test]
     fn check_kind_display() {
+        assert_eq!(CheckKind::Discovery.to_string(), "discovery");
         assert_eq!(CheckKind::Version.to_string(), "version");
         assert_eq!(CheckKind::Sync.to_string(), "sync");
         assert_eq!(CheckKind::Frontmatter.to_string(), "frontmatter");
@@ -170,6 +181,7 @@ mod tests {
     #[test]
     fn lint_error_kind_extraction() {
         let cases: Vec<(LintError, CheckKind)> = vec![
+            (LintError::NoSkillsFound { kind: CheckKind::Discovery, searched: ".".into() }, CheckKind::Discovery),
             (LintError::MissingMapEntry { kind: CheckKind::Sync, name: "x".into() }, CheckKind::Sync),
             (LintError::OrphanMapEntry { kind: CheckKind::Sync, name: "x".into() }, CheckKind::Sync),
             (LintError::MissingFrontmatter { kind: CheckKind::Frontmatter, skill: "x".into(), field: "y".into() }, CheckKind::Frontmatter),
@@ -240,6 +252,7 @@ mod tests {
     #[test]
     fn check_kind_display_fromstr_roundtrip() {
         let kinds = [
+            CheckKind::Discovery,
             CheckKind::Version,
             CheckKind::Sync,
             CheckKind::Frontmatter,

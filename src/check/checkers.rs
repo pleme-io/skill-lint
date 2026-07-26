@@ -5,6 +5,27 @@ use crate::model;
 
 use super::{CheckContext, Checker};
 
+/// Validates that discovery actually found something to lint.
+///
+/// Every other checker iterates `dir_names`; when that set is empty they all
+/// pass vacuously and the run reports success having validated nothing — the
+/// worst possible outcome for a gate, because it manufactures confidence.
+/// This checker makes "linted zero skills" structurally not-a-success. It is
+/// deliberately not disableable: a flag to silence it would reintroduce the
+/// exact footgun.
+pub struct DiscoveryChecker;
+impl Checker for DiscoveryChecker {
+    fn kind(&self) -> CheckKind { CheckKind::Discovery }
+    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
+        if ctx.dir_names.is_empty() {
+            errors.push(LintError::NoSkillsFound {
+                kind: CheckKind::Discovery,
+                searched: ctx.origin.clone(),
+            });
+        }
+    }
+}
+
 /// Validates that the skill map contains `version` and `lastModified` fields.
 pub struct VersionChecker;
 impl Checker for VersionChecker {
