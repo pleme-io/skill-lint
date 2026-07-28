@@ -315,3 +315,303 @@ fn real_skills_carry_no_error_class_other_than_path_resolution() {
         assert!(!stderr.contains(other), "unexpected {other} error on the real corpus:\n{stderr}");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// claudemd — the anti-regrowth seal
+// ═══════════════════════════════════════════════════════════════════
+
+/// A `CLAUDE.md` with an index section holding the given bullets.
+fn claude_md(dir: &std::path::Path, name: &str, bullets: &str) -> std::path::PathBuf {
+    let path = dir.join(name);
+    fs::write(
+        &path,
+        format!(
+            "# Doc\n\n## ★★ Substrate primitive index\n\n\
+             Each line: **rule** + skill (if any) + long-form doc.\n\n{bullets}\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// RED. A gate never observed to fail may be checking nothing.
+#[test]
+fn claudemd_fails_on_an_over_ceiling_entry() {
+    let dir = TempDir::new().unwrap();
+    let file = claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        &format!("- **★★ Fat — a doctrine.** {}\n", "x".repeat(900)),
+    );
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[claudemd-entry]"))
+        .stderr(predicate::str::contains("'Fat'"))
+        .stderr(predicate::str::contains("over the 400 B ceiling"))
+        .stderr(predicate::str::contains("--write-baseline"));
+}
+
+/// GREEN. A compliant file must pass, or the gate is noise rather than a seal.
+#[test]
+fn claudemd_passes_on_a_compliant_file() {
+    let dir = TempDir::new().unwrap();
+    let file = claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        "- **★★ Thin — a rule.** Skill: `x`. Doc: `theory/X.md`.\n\n\
+         - ★ Also thin — another rule. Doc: `theory/Y.md`.\n",
+    );
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 entries"))
+        .stderr(predicate::str::contains("all checks passed"));
+}
+
+/// The bullet-matching trap, end to end.
+///
+/// One entry is written `- **`, the next `- ★`. A scanner that only knows
+/// `- **` welds the star entry's bytes onto the one above it and reports a
+/// phantom entry whose size is the sum of two — which is exactly the 8,434 B
+/// entry the original audit of the live file reported and which never existed.
+/// The one live star-prefixed entry has since been normalized, so this fixture
+/// is the only coverage there is.
+#[test]
+fn claudemd_counts_a_star_prefixed_bullet_as_its_own_entry() {
+    let dir = TempDir::new().unwrap();
+    let file = claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        &format!(
+            "- **★★ Bold — first.** small\n\n- ★★ Starred — second.** {}\n",
+            "y".repeat(900)
+        ),
+    );
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap()])
+        .assert()
+        .failure()
+        // Both entries are seen…
+        .stdout(predicate::str::contains("2 entries"))
+        // …and the overage is attributed to the STARRED one, not welded into
+        // the bold one above it.
+        .stderr(predicate::str::contains("'Starred'"))
+        .stderr(predicate::str::contains("'Bold'").not());
+}
+
+/// A run over zero files exits non-zero. A linter wired into one repository of
+/// seven is green because it never looked at the other six.
+#[test]
+fn claudemd_fails_when_no_files_are_given() {
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("vacuous pass"));
+}
+
+/// Which files were scanned is an OUTPUT of the run, not an assumption.
+#[test]
+fn claudemd_reports_every_file_it_scanned() {
+    let dir = TempDir::new().unwrap();
+    let a = claude_md(dir.path(), "a-CLAUDE.md", "- **★ Thin — rule.** doc\n");
+    fs::write(dir.path().join("b-CLAUDE.md"), "# No index here\n").unwrap();
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args([
+            "claudemd",
+            "--file",
+            a.to_str().unwrap(),
+            "--file",
+            dir.path().join("b-CLAUDE.md").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("scanned 2 file(s)"))
+        .stdout(predicate::str::contains("a-CLAUDE.md"))
+        .stdout(predicate::str::contains("b-CLAUDE.md"))
+        .stdout(predicate::str::contains("no index section matching"));
+}
+
+/// A missing file is a hard error, never a silent skip — dropping an unreadable
+/// file is how a linter comes to cover fewer files than its operator believes.
+#[test]
+fn claudemd_fails_on_a_file_that_is_not_there() {
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", "/nonexistent/CLAUDE.md"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("/nonexistent/CLAUDE.md"));
+}
+
+/// The baseline-debt contract, both halves: recorded debt does not fail the
+/// build, and a NEW violation beside it still does.
+#[test]
+fn claudemd_baseline_absolves_recorded_debt_but_not_a_new_violation() {
+    let dir = TempDir::new().unwrap();
+    let baseline = dir.path().join("baseline.txt");
+    let file = claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        &format!("- **★★ Old — debt.** {}\n", "x".repeat(900)),
+    );
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args([
+            "claudemd",
+            "--file",
+            file.to_str().unwrap(),
+            "--write-baseline",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Recorded debt: green.
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap(), "--baseline", baseline.to_str().unwrap()])
+        .assert()
+        .success();
+
+    // A new entry beside it: red.
+    claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        &format!(
+            "- **★★ Old — debt.** {}\n\n- **★★ New — fresh.** {}\n",
+            "x".repeat(900),
+            "z".repeat(900)
+        ),
+    );
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap(), "--baseline", baseline.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("'New'"))
+        .stderr(predicate::str::contains("'Old'").not());
+}
+
+/// The ratchet — the seal itself. A pure allowlist would let a baselined entry
+/// drift from 1,400 B to 8,000 B in silence, which is the exact failure mode
+/// this gate exists to close.
+#[test]
+fn claudemd_fails_when_baselined_debt_grows() {
+    let dir = TempDir::new().unwrap();
+    let baseline = dir.path().join("baseline.txt");
+    let file = claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        &format!("- **★★ Creep — debt.** {}\n", "x".repeat(900)),
+    );
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args([
+            "claudemd",
+            "--file",
+            file.to_str().unwrap(),
+            "--write-baseline",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    claude_md(
+        dir.path(),
+        "CLAUDE.md",
+        &format!("- **★★ Creep — debt.** {}\n", "x".repeat(1500)),
+    );
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap(), "--baseline", baseline.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("grew to"))
+        .stderr(predicate::str::contains("never grow"));
+}
+
+/// The whole-file ceiling, and that it is baselineable like everything else.
+#[test]
+fn claudemd_enforces_the_whole_file_ceiling() {
+    let dir = TempDir::new().unwrap();
+    let file = claude_md(dir.path(), "CLAUDE.md", "- **★ Thin — rule.** doc\n");
+    let big = fs::read_to_string(&file).unwrap() + &"filler ".repeat(2000);
+    fs::write(&file, big).unwrap();
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap(), "--max-file-bytes", "1000"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[claudemd-file]"))
+        .stderr(predicate::str::contains("standing tax"));
+}
+
+/// Run the seal against the live file and prove the baseline round-trip on real
+/// data: record what is there, then re-run and go green.
+///
+/// It deliberately does NOT assert an exit code on the unbaselined run — the
+/// file lives in another repository and its debt moves under this crate's feet.
+/// What it asserts is the property that stays true either way: the scan finds
+/// the index section, measures entries, and a baseline written from that scan
+/// makes the very same scan pass.
+#[test]
+fn claudemd_round_trips_on_the_real_org_file() {
+    let default = format!(
+        "{}/code/github/pleme-io/blackmatter-pleme/docs/pleme-io-CLAUDE.md",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    let file =
+        std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_CLAUDEMD").unwrap_or(default));
+
+    if !file.is_file() {
+        // Announced, not silent — a skip must never be able to hide as a pass.
+        eprintln!(
+            "SKIP claudemd_round_trips_on_the_real_org_file: no fixture at {} \
+             (set SKILL_LINT_REAL_CLAUDEMD)",
+            file.display()
+        );
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    let baseline = dir.path().join("baseline.txt");
+
+    let out = Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args([
+            "claudemd",
+            "--file",
+            file.to_str().unwrap(),
+            "--write-baseline",
+            baseline.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    eprintln!("REAL CLAUDE.md run:\n{stdout}");
+    assert!(stdout.contains("Substrate primitive index"), "index section not found:\n{stdout}");
+    assert!(!stdout.contains("index entries: 0 "), "measured zero entries:\n{stdout}");
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["claudemd", "--file", file.to_str().unwrap(), "--baseline", baseline.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("all checks passed"));
+}

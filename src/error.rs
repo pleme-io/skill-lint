@@ -36,6 +36,19 @@ pub enum CheckKind {
     /// A dead pointer costs an agent a whole session: it reads the skill, goes
     /// looking for the file it names, and finds nothing to read.
     PathResolution,
+    /// Per-entry budget of a `CLAUDE.md` index section.
+    ///
+    /// An index section states its own contract — "each line: rule + skill +
+    /// long-form doc" — and then grows past it, because nothing was checking.
+    /// The org file's index reached 137,663 B, 46.5% of the whole document,
+    /// with 62 of 68 entries in violation of a contract printed at the top of
+    /// the very section they sit in.
+    ClaudeMdEntry,
+    /// Whole-file budget of a `CLAUDE.md`.
+    ///
+    /// The file is loaded into every session before the first token of work, so
+    /// its size is a standing tax on every task in the repository.
+    ClaudeMdFile,
 }
 
 impl fmt::Display for CheckKind {
@@ -50,6 +63,8 @@ impl fmt::Display for CheckKind {
             Self::References => write!(f, "references"),
             Self::ListingBudget => write!(f, "listing-budget"),
             Self::PathResolution => write!(f, "path-resolution"),
+            Self::ClaudeMdEntry => write!(f, "claudemd-entry"),
+            Self::ClaudeMdFile => write!(f, "claudemd-file"),
         }
     }
 }
@@ -92,6 +107,8 @@ impl FromStr for CheckKind {
             "references" => Ok(Self::References),
             "listing-budget" => Ok(Self::ListingBudget),
             "path-resolution" => Ok(Self::PathResolution),
+            "claudemd-entry" => Ok(Self::ClaudeMdEntry),
+            "claudemd-file" => Ok(Self::ClaudeMdFile),
             _ => Err(ParseCheckKindError(s.to_owned())),
         }
     }
@@ -111,6 +128,53 @@ pub enum LintError {
     /// it is an error, never a success.
     #[error("[{kind}] no skills found under '{searched}' — expected subdirectories each containing a SKILL.md (pass --skills-dir to point at the right root)")]
     NoSkillsFound { kind: CheckKind, searched: String },
+
+    /// The `CLAUDE.md` sibling of [`Self::NoSkillsFound`], and the same rule: a
+    /// linter wired into one repository of seven is green because it never
+    /// looked at the other six. Which files were scanned is an output of every
+    /// run precisely so that this cannot happen quietly.
+    #[error("[{kind}] no CLAUDE.md files were scanned (asked for: {searched}) — a run that lints zero files is a vacuous pass, not a success. Pass --file <PATH> for each file to lint.")]
+    NoDocsScanned { kind: CheckKind, searched: String },
+
+    #[error("[{kind}] {file}:{line} index entry '{entry}' is {bytes} B, over the {cap} B ceiling by {over} B. The section's own header says each line is rule + skill + long-form doc — move the argument, the tier ledger and the worked examples into the doc it points at, which loads on demand instead of in every session. If this is known debt, record it with --write-baseline.")]
+    IndexEntryTooLong {
+        kind: CheckKind,
+        file: String,
+        entry: String,
+        line: usize,
+        bytes: usize,
+        cap: usize,
+        over: usize,
+    },
+
+    #[error("[{kind}] {file}:{line} index entry '{entry}' grew to {bytes} B from the {recorded} B recorded in the baseline (+{grew} B). Baselined debt may shrink or hold, never grow — that is the whole point of the baseline. Move the new material into the long-form doc, or re-record deliberately with --write-baseline.")]
+    IndexEntryGrew {
+        kind: CheckKind,
+        file: String,
+        entry: String,
+        line: usize,
+        bytes: usize,
+        recorded: usize,
+        grew: usize,
+    },
+
+    #[error("[{kind}] {file} is {bytes} B, over the {cap} B ceiling by {over} B — this file is loaded whole into every session, so its size is a standing tax on every task. If this is known debt, record it with --write-baseline.")]
+    DocTooLarge {
+        kind: CheckKind,
+        file: String,
+        bytes: usize,
+        cap: usize,
+        over: usize,
+    },
+
+    #[error("[{kind}] {file} grew to {bytes} B from the {recorded} B recorded in the baseline (+{grew} B). This is the regrowth the baseline exists to catch: the file was cut back once and is climbing again. Move new material into a linked doc, or re-record deliberately with --write-baseline.")]
+    DocGrew {
+        kind: CheckKind,
+        file: String,
+        bytes: usize,
+        recorded: usize,
+        grew: usize,
+    },
 
     #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
     MissingMapEntry { kind: CheckKind, name: String },
@@ -213,6 +277,11 @@ impl LintError {
     pub fn kind(&self) -> CheckKind {
         match self {
             Self::NoSkillsFound { kind, .. }
+            | Self::NoDocsScanned { kind, .. }
+            | Self::IndexEntryTooLong { kind, .. }
+            | Self::IndexEntryGrew { kind, .. }
+            | Self::DocTooLarge { kind, .. }
+            | Self::DocGrew { kind, .. }
             | Self::MissingMapEntry { kind, .. }
             | Self::OrphanMapEntry { kind, .. }
             | Self::MissingFrontmatter { kind, .. }
@@ -247,6 +316,68 @@ mod tests {
         assert_eq!(CheckKind::References.to_string(), "references");
         assert_eq!(CheckKind::ListingBudget.to_string(), "listing-budget");
         assert_eq!(CheckKind::PathResolution.to_string(), "path-resolution");
+        assert_eq!(CheckKind::ClaudeMdEntry.to_string(), "claudemd-entry");
+        assert_eq!(CheckKind::ClaudeMdFile.to_string(), "claudemd-file");
+    }
+
+    /// The message has to carry the measurement AND the move that fixes it.
+    /// "Too long" without a byte count is unarguable; a byte count without the
+    /// remedy sends the reader looking for a policy that lives somewhere else.
+    #[test]
+    fn index_entry_message_carries_the_measurement_and_the_remedy() {
+        let err = LintError::IndexEntryTooLong {
+            kind: CheckKind::ClaudeMdEntry,
+            file: "docs/pleme-io-CLAUDE.md".into(),
+            entry: "OPERATING-THEORY".into(),
+            line: 2529,
+            bytes: 6365,
+            cap: 400,
+            over: 5965,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("[claudemd-entry]"), "kind tag missing: {msg}");
+        assert!(msg.contains("docs/pleme-io-CLAUDE.md:2529"), "location missing: {msg}");
+        assert!(msg.contains("OPERATING-THEORY"), "entry missing: {msg}");
+        assert!(msg.contains("6365 B") && msg.contains("400 B"), "sizes missing: {msg}");
+        assert!(msg.contains("--write-baseline"), "baseline escape hatch missing: {msg}");
+    }
+
+    /// The growth message must say it is growth, not merely size — the reader's
+    /// action differs (move the NEW material out, not the whole entry).
+    #[test]
+    fn growth_messages_name_the_baseline_they_exceeded() {
+        let entry = LintError::IndexEntryGrew {
+            kind: CheckKind::ClaudeMdEntry,
+            file: "docs/CLAUDE.md".into(),
+            entry: "BUILD".into(),
+            line: 10,
+            bytes: 2000,
+            recorded: 1400,
+            grew: 600,
+        };
+        assert!(entry.to_string().contains("grew to 2000 B from the 1400 B"), "{entry}");
+
+        let doc = LintError::DocGrew {
+            kind: CheckKind::ClaudeMdFile,
+            file: "docs/CLAUDE.md".into(),
+            bytes: 300_000,
+            recorded: 282_648,
+            grew: 17_352,
+        };
+        assert!(doc.to_string().contains("regrowth"), "{doc}");
+    }
+
+    /// A vacuous run must say what it looked for, or the operator cannot tell a
+    /// mis-pointed `--file` from an empty corpus.
+    #[test]
+    fn no_docs_scanned_names_what_was_searched() {
+        let err = LintError::NoDocsScanned {
+            kind: CheckKind::Discovery,
+            searched: "<no files given>".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("vacuous pass"), "{msg}");
+        assert!(msg.contains("<no files given>"), "{msg}");
     }
 
     #[test]
@@ -296,6 +427,11 @@ mod tests {
             (LintError::ReferenceNewer { kind: CheckKind::References, skill: "x".into(), skill_date: "d1".into(), reference: "y".into(), ref_date: "d2".into() }, CheckKind::References),
             (LintError::DescriptionTooLong { kind: CheckKind::ListingBudget, skill: "x".into(), chars: 2, cap: 1, over: 1 }, CheckKind::ListingBudget),
             (LintError::UnresolvedPath { kind: CheckKind::PathResolution, skill: "x".into(), path: "a/b.md".into(), form: PathForm::RepoPath }, CheckKind::PathResolution),
+            (LintError::NoDocsScanned { kind: CheckKind::Discovery, searched: "x".into() }, CheckKind::Discovery),
+            (LintError::IndexEntryTooLong { kind: CheckKind::ClaudeMdEntry, file: "f".into(), entry: "e".into(), line: 1, bytes: 2, cap: 1, over: 1 }, CheckKind::ClaudeMdEntry),
+            (LintError::IndexEntryGrew { kind: CheckKind::ClaudeMdEntry, file: "f".into(), entry: "e".into(), line: 1, bytes: 2, recorded: 1, grew: 1 }, CheckKind::ClaudeMdEntry),
+            (LintError::DocTooLarge { kind: CheckKind::ClaudeMdFile, file: "f".into(), bytes: 2, cap: 1, over: 1 }, CheckKind::ClaudeMdFile),
+            (LintError::DocGrew { kind: CheckKind::ClaudeMdFile, file: "f".into(), bytes: 2, recorded: 1, grew: 1 }, CheckKind::ClaudeMdFile),
         ];
         for (err, expected_kind) in cases {
             assert_eq!(err.kind(), expected_kind, "wrong kind for {err}");
@@ -362,6 +498,8 @@ mod tests {
             CheckKind::References,
             CheckKind::ListingBudget,
             CheckKind::PathResolution,
+            CheckKind::ClaudeMdEntry,
+            CheckKind::ClaudeMdFile,
         ];
         for kind in kinds {
             let s = kind.to_string();

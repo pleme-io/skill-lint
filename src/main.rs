@@ -107,6 +107,54 @@ enum Command {
         #[arg(long, default_value_t = 1536)]
         max_desc_chars: usize,
     },
+
+    /// Lint CLAUDE.md files — the anti-regrowth seal.
+    ///
+    /// A CLAUDE.md is loaded whole into every session, so its size taxes every
+    /// task in the repository. Its index section states its own contract —
+    /// "each line: rule + skill + long-form doc" — and then grows past it,
+    /// because nothing was checking. This checks it.
+    ///
+    /// Baseline-debt shaped: known violations are recorded with the size they
+    /// had when recorded, and only a NEW violation or a baselined item that
+    /// GREW fails the run.
+    Claudemd {
+        /// A CLAUDE.md to lint. Repeat for each file.
+        ///
+        /// Which files were scanned is an OUTPUT of every run: a linter wired
+        /// into one repository of seven is green because it never looked at the
+        /// other six, and a run over zero files exits non-zero rather than
+        /// reporting a vacuous pass.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+
+        /// Folded-byte ceiling for one index entry.
+        #[arg(long, default_value_t = skill_lint::claudemd::DEFAULT_MAX_ENTRY_BYTES)]
+        max_entry_bytes: usize,
+
+        /// Raw-byte ceiling for a whole file.
+        #[arg(long, default_value_t = skill_lint::claudemd::DEFAULT_MAX_FILE_BYTES)]
+        max_file_bytes: usize,
+
+        /// Heading substring identifying the index section whose entries are
+        /// measured. Bullets elsewhere in the file are prose, not entries.
+        #[arg(long, default_value = skill_lint::claudemd::DEFAULT_INDEX_HEADING)]
+        index_heading: String,
+
+        /// Baseline of known debt. Without one, every existing violation fails.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Write the current violations to this path as a baseline, then exit
+        /// 0. This is what makes the gate adoptable on a file that is already
+        /// in violation; it is not a way to clear a finding you just caused.
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+
+        /// Show this many largest entries.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -229,5 +277,121 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+
+        Command::Claudemd {
+            files,
+            max_entry_bytes,
+            max_file_bytes,
+            index_heading,
+            baseline,
+            write_baseline,
+            top,
+        } => {
+            use skill_lint::claudemd::{Baseline, ClaudeMdConfig, FsDocSource};
+
+            let config = ClaudeMdConfig { max_entry_bytes, max_file_bytes, index_heading };
+            let known = match baseline.as_deref() {
+                Some(path) => Baseline::load(path)?,
+                None => Baseline::default(),
+            };
+
+            let source = FsDocSource { paths: &files };
+            let report = skill_lint::claudemd::lint_all(&source, &config, known)
+                .context("linting CLAUDE.md files")?;
+
+            // Coverage is part of the gate: what was scanned is stated before
+            // any verdict, so a green run over the wrong file set is visible
+            // rather than merely green.
+            println!("scanned {} file(s):", report.scans.len());
+            for scan in &report.scans {
+                match &scan.section {
+                    Some(section) => println!(
+                        "  {:<40} {:>8} B   index {:?}: {} entries",
+                        scan.key,
+                        scan.bytes,
+                        section.heading.trim(),
+                        section.entries.len()
+                    ),
+                    None => println!(
+                        "  {:<40} {:>8} B   no index section matching {:?}",
+                        scan.key, scan.bytes, config.index_heading
+                    ),
+                }
+            }
+
+            let entries = report.entry_count();
+            println!(
+                "\nindex entries: {entries} across {} file(s) — {} over the {} B ceiling",
+                report.scans.len(),
+                report.over_ceiling(),
+                config.max_entry_bytes
+            );
+            if let Some(median) = report.median_entry_bytes() {
+                let largest = report.entries_by_size();
+                println!(
+                    "  median {median} B, max {} B, total {} B",
+                    largest.first().map_or(0, |e| e.bytes),
+                    largest.iter().map(|e| e.bytes).sum::<usize>()
+                );
+                println!("  largest {top}:");
+                for entry in largest.iter().take(top) {
+                    let over = entry.bytes.saturating_sub(config.max_entry_bytes);
+                    println!("    {:>6} B  (+{:>5})  {}", entry.bytes, over, entry.key);
+                }
+            }
+
+            let census = report.census();
+            println!("\ndirective census (a load signal, not a verdict):");
+            println!("  skip-* waivers      {:>5}   {}", census.skip_total(), top_names(&census.skips));
+            println!("  pending-* markers   {:>5}   {}", census.pending_total(), top_names(census.pendings()));
+            println!(
+                "  imperative lines    {:>5}   {}",
+                census.imperative_lines,
+                top_names(&census.imperatives)
+            );
+            println!("  \" never \" in prose  {:>5}", census.never_lowercase);
+
+            if let Some(path) = write_baseline.as_deref() {
+                let text = Baseline::render(&report.scans, &config);
+                std::fs::write(path, &text)
+                    .with_context(|| format!("writing baseline {}", path.display()))?;
+                println!(
+                    "\nwrote baseline {} ({} recorded item(s))",
+                    path.display(),
+                    text.lines().filter(|l| !l.starts_with('#')).count()
+                );
+                return Ok(());
+            }
+
+            if report.is_ok() {
+                eprintln!(
+                    "skill-lint claudemd: all checks passed ({} file(s), {entries} index entries)",
+                    report.scans.len()
+                );
+            } else {
+                eprintln!("\nskill-lint claudemd: {} error(s):", report.errors.len());
+                for err in &report.errors {
+                    eprintln!("  - {err}");
+                }
+                process::exit(1);
+            }
+
+            Ok(())
+        }
     }
+}
+
+/// Render the busiest few names of a census bucket, largest first.
+///
+/// A bare total says the load exists; the names say where it is.
+fn top_names(counts: &std::collections::BTreeMap<String, usize>) -> String {
+    if counts.is_empty() {
+        return String::new();
+    }
+    let mut pairs: Vec<(&String, &usize)> = counts.iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let shown: Vec<String> =
+        pairs.iter().take(6).map(|(name, count)| format!("{name} {count}")).collect();
+    let suffix = if pairs.len() > 6 { format!(", +{} more", pairs.len() - 6) } else { String::new() };
+    format!("({}{suffix})", shown.join(", "))
 }
