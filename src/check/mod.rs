@@ -9,8 +9,8 @@ use crate::error::{CheckKind, LintError};
 use crate::model::{self, SkillMap};
 
 pub use checkers::{
-    DiscoveryChecker, FrontmatterChecker, MapIntegrityChecker, ReferencesFreshnessChecker,
-    StalenessChecker, SyncChecker, VersionChecker,
+    DiscoveryChecker, FrontmatterChecker, ListingBudgetChecker, MapIntegrityChecker,
+    ReferencesFreshnessChecker, StalenessChecker, SyncChecker, VersionChecker,
 };
 pub use fs_source::FsSource;
 
@@ -134,6 +134,14 @@ pub struct CheckConfig {
     pub max_age_days: Option<u32>,
     /// Override "today" for deterministic staleness testing (YYYY-MM-DD).
     pub today: Option<String>,
+    /// Hard per-entry skill-listing character cap.
+    ///
+    /// Claude Code truncates each listing entry at this many characters and
+    /// silently discards the rest, so a description over the cap loses whatever
+    /// trigger vocabulary sits past it. Configurable because the platform
+    /// exposes it as a setting (`skillListingMaxDescChars`); the default
+    /// mirrors the documented platform default.
+    pub max_desc_chars: usize,
 }
 
 impl Default for CheckConfig {
@@ -146,6 +154,8 @@ impl Default for CheckConfig {
             duplicate_concerns: true,
             max_age_days: None,
             today: None,
+            // Platform default for `skillListingMaxDescChars`.
+            max_desc_chars: 1536,
         }
     }
 }
@@ -199,6 +209,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
         Box::new(SyncChecker),
         Box::new(FrontmatterChecker),
         Box::new(MapIntegrityChecker),
+        Box::new(ListingBudgetChecker { cap: config.max_desc_chars }),
     ];
 
     if let Some(max_days) = config.max_age_days {
@@ -496,6 +507,42 @@ mod tests {
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert!(report.errors.iter().any(|e| matches!(e,
             LintError::MissingFrontmatter { field, .. } if field.contains("parse error"))));
+    }
+
+    #[test]
+    fn description_within_listing_cap_passes() {
+        let fm = format!("name: fits\ndescription: {}", "x".repeat(1000));
+        let source = MockSource::new().with_skill("fits", "meta", &fm);
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::ListingBudget).len(), 0);
+    }
+
+    /// The gate must be observed RED against a deliberately-broken input.
+    ///
+    /// A check that has never failed may be checking nothing; this pins the
+    /// failing direction so a future refactor cannot silently neuter it.
+    #[test]
+    fn description_over_listing_cap_is_caught() {
+        let fm = format!("name: toolong\ndescription: {}", "x".repeat(2000));
+        let source = MockSource::new().with_skill("toolong", "meta", &fm);
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::ListingBudget);
+        assert_eq!(errs.len(), 1, "expected exactly one listing-budget error, got {errs:?}");
+        assert!(matches!(errs[0],
+            LintError::DescriptionTooLong { chars: 2000, cap: 1536, over: 464, .. }),
+            "wrong measurement: {:?}", errs[0]);
+    }
+
+    /// The cap is configurable, so a consumer can gate tighter than the
+    /// platform default without patching the checker.
+    #[test]
+    fn listing_cap_is_configurable() {
+        let fm = format!("name: mid\ndescription: {}", "x".repeat(600));
+        let source = MockSource::new().with_skill("mid", "meta", &fm);
+        let tight = CheckConfig { max_desc_chars: 500, ..CheckConfig::default() };
+        assert_eq!(check_all(&source, &tight).unwrap().errors_of(CheckKind::ListingBudget).len(), 1);
+        let loose = CheckConfig { max_desc_chars: 700, ..CheckConfig::default() };
+        assert_eq!(check_all(&source, &loose).unwrap().errors_of(CheckKind::ListingBudget).len(), 0);
     }
 
     #[test]

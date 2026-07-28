@@ -45,6 +45,13 @@ enum Command {
         /// Flag skills not verified within this many days as stale.
         #[arg(long)]
         max_age_days: Option<u32>,
+
+        /// Per-entry skill-listing character cap. Descriptions longer than this
+        /// are truncated by the platform and the remainder — including any
+        /// trigger phrases in it — is silently discarded. Defaults to the
+        /// platform default for `skillListingMaxDescChars`.
+        #[arg(long, default_value_t = 1536)]
+        max_desc_chars: usize,
     },
 }
 
@@ -60,6 +67,7 @@ fn main() -> Result<()> {
             skip_map_integrity,
             map_dir,
             max_age_days,
+            max_desc_chars,
         } => {
             let config = CheckConfig {
                 version: !skip_version,
@@ -69,6 +77,7 @@ fn main() -> Result<()> {
                 duplicate_concerns: !skip_map_integrity,
                 max_age_days,
                 today: None,
+                max_desc_chars,
             };
 
             let source = check::FsSource {

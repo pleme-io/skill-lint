@@ -14,6 +14,16 @@ pub enum CheckKind {
     MapIntegrity,
     Staleness,
     References,
+    /// Per-entry skill-listing budget.
+    ///
+    /// Claude Code truncates each listing entry — the combined `description`
+    /// and `when_to_use` — at a hard character cap, and text past that point is
+    /// silently discarded. A skill whose trigger vocabulary sits past the cut
+    /// still *looks* authored and maintained while being unroutable: a guard
+    /// over zero subjects. This is structural, not freshness — it has an
+    /// objective right answer a machine can check — so it is always-on and
+    /// gateable alongside sync/frontmatter/map-integrity.
+    ListingBudget,
 }
 
 impl fmt::Display for CheckKind {
@@ -26,6 +36,7 @@ impl fmt::Display for CheckKind {
             Self::MapIntegrity => write!(f, "map-integrity"),
             Self::Staleness => write!(f, "staleness"),
             Self::References => write!(f, "references"),
+            Self::ListingBudget => write!(f, "listing-budget"),
         }
     }
 }
@@ -42,6 +53,7 @@ impl FromStr for CheckKind {
             "map-integrity" => Ok(Self::MapIntegrity),
             "staleness" => Ok(Self::Staleness),
             "references" => Ok(Self::References),
+            "listing-budget" => Ok(Self::ListingBudget),
             _ => Err(ParseCheckKindError(s.to_owned())),
         }
     }
@@ -67,6 +79,15 @@ pub enum LintError {
 
     #[error("[{kind}] map entry '{name}' has no skill directory")]
     OrphanMapEntry { kind: CheckKind, name: String },
+
+    #[error("[{kind}] skill '{skill}': description is {chars} chars, over the {cap}-char listing cap — the last {over} chars are silently discarded and any trigger phrase in them can never match. Front-load the invocation triggers and move narrative into the skill body (the body loads on invoke and costs nothing until then).")]
+    DescriptionTooLong {
+        kind: CheckKind,
+        skill: String,
+        chars: usize,
+        cap: usize,
+        over: usize,
+    },
 
     #[error("[{kind}] skill '{skill}': frontmatter field '{field}' is missing")]
     MissingFrontmatter {
@@ -158,6 +179,7 @@ impl LintError {
             | Self::MissingVersion { kind }
             | Self::MissingLastModified { kind }
             | Self::Stale { kind, .. }
+            | Self::DescriptionTooLong { kind, .. }
             | Self::ReferenceNewer { kind, .. } => *kind,
         }
     }

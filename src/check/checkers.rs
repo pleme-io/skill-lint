@@ -270,3 +270,53 @@ impl Checker for ReferencesFreshnessChecker {
         }
     }
 }
+
+/// Validates that each skill's description fits the per-entry listing cap.
+///
+/// Claude Code loads a listing of skill names and descriptions so the model
+/// knows what is available, and truncates each entry — the combined
+/// `description` and `when_to_use` — at a hard character cap. Text past the cut
+/// is silently discarded.
+///
+/// That makes an over-long description strictly worse than a short one: the
+/// trigger phrases most likely to sit at the end ("Invoke when the operator
+/// says …") are exactly what gets dropped, so the skill keeps being authored,
+/// reviewed and maintained while becoming unroutable by description match. It
+/// is the vacuous-guard shape applied to routing — a skill that cannot be
+/// selected is a capability over zero subjects.
+///
+/// Structural, not freshness: there is an objective right answer a machine can
+/// check and a human can fix without manufacturing a claim, so unlike
+/// staleness this is safe to gate CI on.
+pub struct ListingBudgetChecker {
+    /// Hard per-entry cap in characters.
+    pub cap: usize,
+}
+
+impl Checker for ListingBudgetChecker {
+    fn kind(&self) -> CheckKind { CheckKind::ListingBudget }
+
+    fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
+        for name in &ctx.dir_names {
+            let Some(content) = ctx.contents.get(name) else { continue };
+            let Ok(fm) = model::parse_frontmatter(content) else { continue };
+            let Some(desc) = fm.description.as_ref() else { continue };
+
+            // Measure the description as the listing sees it: YAML block
+            // scalars arrive already folded, so normalize runs of whitespace
+            // to single spaces rather than counting raw source bytes.
+            let folded: String = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+            let chars = folded.chars().count();
+
+            if chars > self.cap {
+                errors.push(LintError::DescriptionTooLong {
+                    kind: CheckKind::ListingBudget,
+                    skill: name.clone(),
+                    chars,
+                    cap: self.cap,
+                    over: chars - self.cap,
+                });
+            }
+        }
+    }
+}
