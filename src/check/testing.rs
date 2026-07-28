@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use crate::model::{SkillEntry, SkillMap};
 
-use super::SkillSource;
+use super::{PathOracle, SkillSource, normalize_lexical};
 
 /// In-memory skill source for deterministic testing without filesystem.
 /// Use the builder methods to construct test scenarios.
@@ -13,6 +14,12 @@ pub struct MockSource {
     pub dirs: BTreeSet<String>,
     /// Simulated `SKILL.md` contents keyed by skill name.
     pub contents: BTreeMap<String, String>,
+    /// Repositories simulated as present on this machine.
+    pub repos: BTreeSet<String>,
+    /// Files simulated under the repo root, e.g. `theory/THEORY.md`.
+    pub repo_files: BTreeSet<PathBuf>,
+    /// Files simulated under the skills root, e.g. `alpha/references/a.md`.
+    pub skill_files: BTreeSet<PathBuf>,
 }
 
 impl MockSource {
@@ -27,7 +34,39 @@ impl MockSource {
             },
             dirs: BTreeSet::new(),
             contents: BTreeMap::new(),
+            repos: BTreeSet::new(),
+            repo_files: BTreeSet::new(),
+            skill_files: BTreeSet::new(),
         }
+    }
+
+    /// Simulate a repository being present on this machine.
+    ///
+    /// Separate from [`Self::with_repo_file`] on purpose: "the repo is here but
+    /// the file is not" (a real dead pointer) and "the repo was never cloned"
+    /// (unknowable, must stay silent) are different states, and the gate that
+    /// tells them apart is only testable if a test can build each.
+    #[must_use]
+    pub fn with_repo(mut self, repo: &str) -> Self {
+        self.repos.insert(repo.into());
+        self
+    }
+
+    /// Simulate a file under the repo root, and the repository holding it.
+    #[must_use]
+    pub fn with_repo_file(mut self, path: &str) -> Self {
+        if let Some(repo) = path.split('/').next() {
+            self.repos.insert(repo.into());
+        }
+        self.repo_files.insert(normalize_lexical(&PathBuf::from(path)));
+        self
+    }
+
+    /// Simulate a file under the skills root, e.g. `alpha/references/a.md`.
+    #[must_use]
+    pub fn with_skill_file(mut self, path: &str) -> Self {
+        self.skill_files.insert(normalize_lexical(&PathBuf::from(path)));
+        self
     }
 
     /// Add a fully-wired skill: directory, content, map entry, and domain listing.
@@ -89,6 +128,14 @@ impl MockSource {
         self
     }
 
+    /// Replace a skill's body, keeping its frontmatter valid.
+    #[must_use]
+    pub fn with_body(mut self, skill: &str, body: &str) -> Self {
+        self.contents
+            .insert(skill.into(), format!("---\n{}\n---\n\n{body}\n", valid_fm(skill)));
+        self
+    }
+
     /// Override the raw `SKILL.md` content for a skill.
     #[must_use]
     pub fn with_raw_content(mut self, skill: &str, content: &str) -> Self {
@@ -107,6 +154,34 @@ impl SkillSource for MockSource {
     fn skill_content(&self, name: &str) -> anyhow::Result<String> {
         self.contents.get(name).cloned()
             .ok_or_else(|| anyhow::anyhow!("skill {name} not found"))
+    }
+
+    fn path_oracle(&self) -> Option<Box<dyn PathOracle>> {
+        Some(Box::new(MockPathOracle {
+            repos: self.repos.clone(),
+            repo_files: self.repo_files.clone(),
+            skill_files: self.skill_files.clone(),
+        }))
+    }
+}
+
+/// In-memory [`PathOracle`] — a virtual filesystem of exactly the paths a test
+/// declared, so path resolution is exercised without touching disk.
+pub struct MockPathOracle {
+    repos: BTreeSet<String>,
+    repo_files: BTreeSet<PathBuf>,
+    skill_files: BTreeSet<PathBuf>,
+}
+
+impl PathOracle for MockPathOracle {
+    fn exists_near_skill(&self, skill: &str, rel: &str) -> bool {
+        self.skill_files.contains(&normalize_lexical(&PathBuf::from(skill).join(rel)))
+    }
+
+    fn has_repo(&self, repo: &str) -> bool { self.repos.contains(repo) }
+
+    fn exists_under_repo_root(&self, rel: &str) -> bool {
+        self.repo_files.contains(&normalize_lexical(&PathBuf::from(rel)))
     }
 }
 

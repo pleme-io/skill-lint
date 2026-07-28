@@ -139,6 +139,77 @@ fn check_reports_error_count() {
         .stderr(predicate::str::contains("error(s)"));
 }
 
+/// A skill body that points at a file which is not there fails the run, and the
+/// message carries the path plus the waiver that would excuse it.
+///
+/// The RED half of the path-resolution gate. A gate never observed to fail may
+/// be checking nothing.
+#[test]
+fn check_fails_on_a_dead_relative_link() {
+    let dir = TempDir::new().unwrap();
+    valid_skill(dir.path(), "alpha");
+    valid_map(dir.path(), &[("alpha", "meta")]);
+    let skill = dir.path().join("alpha").join("SKILL.md");
+    let body = fs::read_to_string(&skill).unwrap() + "\nsee [notes](./references/notes.md)\n";
+    fs::write(&skill, body).unwrap();
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[path-resolution]"))
+        .stderr(predicate::str::contains("./references/notes.md"))
+        .stderr(predicate::str::contains("pending-path:"));
+}
+
+/// The GREEN half, twice over: a link whose target exists passes, and a link
+/// whose target is declared absent with `pending-path:` passes too.
+#[test]
+fn check_passes_on_live_and_waived_paths() {
+    let dir = TempDir::new().unwrap();
+    valid_skill(dir.path(), "alpha");
+    valid_map(dir.path(), &[("alpha", "meta")]);
+
+    let refs = dir.path().join("alpha").join("references");
+    fs::create_dir_all(&refs).unwrap();
+    fs::write(refs.join("notes.md"), "# Notes\n").unwrap();
+
+    let skill = dir.path().join("alpha").join("SKILL.md");
+    let body = fs::read_to_string(&skill).unwrap()
+        + "\nsee [notes](./references/notes.md) and [soon](./references/soon.md)\n\n\
+           pending-path: ./references/soon.md — lands with the next pass\n";
+    fs::write(&skill, body).unwrap();
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("all checks passed"));
+}
+
+/// The waiver is scoped to the path it names — it does not silence the skill.
+#[test]
+fn check_still_fails_on_an_unwaived_sibling_path() {
+    let dir = TempDir::new().unwrap();
+    valid_skill(dir.path(), "alpha");
+    valid_map(dir.path(), &[("alpha", "meta")]);
+
+    let skill = dir.path().join("alpha").join("SKILL.md");
+    let body = fs::read_to_string(&skill).unwrap()
+        + "\n[a](./gone-a.md) and [b](./gone-b.md)\n\npending-path: ./gone-a.md — accepted\n";
+    fs::write(&skill, body).unwrap();
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("./gone-b.md"))
+        .stderr(predicate::str::contains("./gone-a.md' does not resolve").not());
+}
+
 #[test]
 fn check_passes_on_real_skills() {
     // Run against the actual blackmatter-pleme skills if available.
@@ -178,7 +249,24 @@ fn check_passes_on_real_skills() {
     eprintln!("RUN check_passes_on_real_skills against {}", skills_dir.display());
     Command::cargo_bin("skill-lint")
         .unwrap()
-        .args(["check", "--skills-dir", skills_dir.to_str().unwrap()])
+        .args([
+            "check",
+            "--skills-dir",
+            skills_dir.to_str().unwrap(),
+            // BASELINE DEBT, not a claim of cleanliness. Measured 2026-07-27,
+            // the day path resolution landed: the real corpus carries 22 dead
+            // pointers across 144 skills (3 relative links, 19 repo-relative
+            // paths) — pre-existing defects in a repository this crate does not
+            // own and must not silently "fix" by creating the files.
+            //
+            // This test's contract is the STRUCTURAL suite — sync, frontmatter,
+            // map-integrity, version, listing-budget — and that contract is
+            // still asserted in full. The companion test below runs the corpus
+            // WITH resolution on, so the new check is exercised against real
+            // data rather than only against fixtures. Drop this flag once the
+            // 22 are fixed or waived upstream; do not use it to keep them.
+            "--skip-path-resolution",
+        ])
         .assert()
         .success()
         // Not merely exit-0: assert it actually linted something. Without this
@@ -186,4 +274,44 @@ fn check_passes_on_real_skills() {
         // the DiscoveryChecker now forbids.
         .stderr(predicate::str::contains("all checks passed"))
         .stderr(predicate::str::contains("(0 skills)").not());
+}
+
+/// Run the real corpus WITH path resolution on, so the check meets real data.
+///
+/// It deliberately asserts neither success nor failure on the count: the corpus
+/// lives in another repository and its dead-pointer debt moves under this
+/// crate's feet in both directions. What it DOES assert is the property that
+/// stays true either way — that path resolution is the only outstanding class,
+/// i.e. no other check regressed behind the skip flag the test above passes.
+/// The findings are printed so the debt stays visible rather than hidden by a
+/// flag (`cargo test -- --nocapture`).
+#[test]
+fn real_skills_carry_no_error_class_other_than_path_resolution() {
+    let default = format!(
+        "{}/code/github/pleme-io/blackmatter-pleme/skills",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    let skills_dir =
+        std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_SKILLS").unwrap_or(default));
+
+    if !skills_dir.is_dir() {
+        eprintln!(
+            "SKIP real_skills_carry_no_error_class_other_than_path_resolution: \
+             no fixture at {}",
+            skills_dir.display()
+        );
+        return;
+    }
+
+    let out = Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", skills_dir.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    eprintln!("REAL CORPUS path-resolution run:\n{stderr}");
+
+    for other in ["[sync]", "[frontmatter]", "[map-integrity]", "[version]", "[discovery]", "[listing-budget]"] {
+        assert!(!stderr.contains(other), "unexpected {other} error on the real corpus:\n{stderr}");
+    }
 }

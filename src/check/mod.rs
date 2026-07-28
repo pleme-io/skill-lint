@@ -1,9 +1,10 @@
 mod checkers;
 mod fs_source;
+pub mod links;
 pub mod testing;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{CheckKind, LintError};
 use crate::model::{self, SkillMap};
@@ -13,6 +14,26 @@ pub use checkers::{
     ReferencesFreshnessChecker, StalenessChecker, SyncChecker, VersionChecker,
 };
 pub use fs_source::FsSource;
+pub use links::PathResolutionChecker;
+
+/// Lexically resolve `.` and `..` without touching the filesystem.
+///
+/// Deterministic by construction: two equal path expressions normalize to the
+/// same value whether or not anything exists, which is what lets the in-memory
+/// and on-disk oracles agree.
+pub(crate) fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // SkillSource trait — abstracts I/O for testability
@@ -47,6 +68,40 @@ pub trait SkillSource {
     /// Reported when discovery finds nothing, so the operator sees which root
     /// was actually searched rather than a bare "0 skills".
     fn origin(&self) -> String { "<in-memory source>".to_owned() }
+
+    /// Resolver for paths mentioned in skill bodies, if this source can resolve
+    /// them at all.
+    ///
+    /// `None` is the honest default: a source with no notion of a filesystem
+    /// cannot say whether `theory/THEORY.md` exists, and the path-resolution
+    /// check reports nothing rather than reporting everything as broken.
+    /// Unknown is not absent.
+    fn path_oracle(&self) -> Option<Box<dyn PathOracle>> { None }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PathOracle trait — resolves what a skill body points at
+// ═══════════════════════════════════════════════════════════════════
+
+/// Answers existence questions about paths a skill body names.
+///
+/// Deliberately OWNS its data rather than borrowing the source, so
+/// [`CheckContext`] stays free of lifetime parameters and every checker keeps
+/// its `&CheckContext`-only signature.
+pub trait PathOracle {
+    /// Is `rel` present, resolved from `skill`'s own directory?
+    fn exists_near_skill(&self, skill: &str, rel: &str) -> bool;
+
+    /// Is `repo` a repository present on this machine?
+    ///
+    /// This is the gate that keeps the check trustworthy: a `<repo>/<path>`
+    /// pointer into a repository nobody has cloned is unknowable, and guessing
+    /// "broken" would fire on a reader's checkout rather than on a real defect.
+    fn has_repo(&self, repo: &str) -> bool;
+
+    /// Is `rel` — a `<repo>/<path>` string — present under the root that holds
+    /// sibling repositories?
+    fn exists_under_repo_root(&self, rel: &str) -> bool;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -74,6 +129,9 @@ pub struct CheckContext {
     pub contents: BTreeMap<String, String>,
     /// Where the source looked for skills — reported when discovery is empty.
     pub origin: String,
+    /// Resolver for paths named in skill bodies. `None` when the source cannot
+    /// resolve paths, in which case path resolution reports nothing.
+    pub oracle: Option<Box<dyn PathOracle>>,
 }
 
 impl CheckContext {
@@ -92,7 +150,14 @@ impl CheckContext {
                 source.skill_content(name).ok().map(|c| (name.clone(), c))
             })
             .collect();
-        Ok(Self { map, dir_names, map_names, contents, origin: source.origin() })
+        Ok(Self {
+            map,
+            dir_names,
+            map_names,
+            contents,
+            origin: source.origin(),
+            oracle: source.path_oracle(),
+        })
     }
 
     /// Build a map of skill name → `last_verified` date from parsed frontmatter.
@@ -130,6 +195,15 @@ pub struct CheckConfig {
     pub map_integrity: bool,
     /// Enable duplicate-concern detection.
     pub duplicate_concerns: bool,
+    /// Enable link/path resolution against the backing store.
+    ///
+    /// Default-ON: a dead pointer has an objective right answer a human can fix
+    /// without manufacturing a claim, so it is safe to gate CI on. The flag
+    /// exists for the case where the answer is knowably unavailable — a corpus
+    /// linted somewhere its sibling repositories are not — not as a way to live
+    /// with dead pointers, which is what the per-path `pending-path:` waiver is
+    /// for.
+    pub path_resolution: bool,
     /// Staleness threshold in days. `None` disables the check.
     pub max_age_days: Option<u32>,
     /// Override "today" for deterministic staleness testing (YYYY-MM-DD).
@@ -152,6 +226,7 @@ impl Default for CheckConfig {
             frontmatter: true,
             map_integrity: true,
             duplicate_concerns: true,
+            path_resolution: true,
             max_age_days: None,
             today: None,
             // Platform default for `skillListingMaxDescChars`.
@@ -210,6 +285,10 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
         Box::new(FrontmatterChecker),
         Box::new(MapIntegrityChecker),
         Box::new(ListingBudgetChecker { cap: config.max_desc_chars }),
+        // Structural, like the four above it: "the file is not there" is an
+        // objective fact, so this rides with the always-on suite rather than
+        // with the freshness checks gated below.
+        Box::new(PathResolutionChecker),
     ];
 
     if let Some(max_days) = config.max_age_days {
@@ -252,6 +331,7 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
             CheckKind::Sync => config.sync,
             CheckKind::Frontmatter => config.frontmatter,
             CheckKind::MapIntegrity => config.map_integrity || config.duplicate_concerns,
+            CheckKind::PathResolution => config.path_resolution,
             _ => true,
         };
         if enabled {
@@ -282,6 +362,7 @@ mod tests {
 
     use super::*;
     use super::testing::*;
+    use crate::error::PathForm;
 
     // ─── Happy path ───────────────────────────────────────────────
 
@@ -543,6 +624,227 @@ mod tests {
         assert_eq!(check_all(&source, &tight).unwrap().errors_of(CheckKind::ListingBudget).len(), 1);
         let loose = CheckConfig { max_desc_chars: 700, ..CheckConfig::default() };
         assert_eq!(check_all(&source, &loose).unwrap().errors_of(CheckKind::ListingBudget).len(), 0);
+    }
+
+    // ─── Path resolution ─────────────────────────────────────────
+    //
+    // Every case below is pinned in BOTH directions. A gate never observed to
+    // fail may be checking nothing, and a gate never observed to pass may be
+    // checking everything — either way it stops being believed.
+
+    /// RED: a relative link at a file that is not there is caught.
+    #[test]
+    fn dead_relative_link_is_caught() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "see [the notes](./references/notes.md)");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::PathResolution);
+        assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::UnresolvedPath { path, form, .. }
+                if path == "./references/notes.md" && *form == PathForm::RelativeLink),
+            "wrong finding: {:?}", errs[0]
+        );
+    }
+
+    /// GREEN: the same link, with the file present, is silent.
+    #[test]
+    fn live_relative_link_passes() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "see [the notes](./references/notes.md)")
+            .with_skill_file("alpha/references/notes.md");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// RED: a repo-relative path into a cloned repo that lacks the file.
+    #[test]
+    fn dead_repo_path_is_caught() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `theory/GHOST.md`")
+            .with_repo("theory");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::PathResolution);
+        assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::UnresolvedPath { path, form, .. }
+                if path == "theory/GHOST.md" && *form == PathForm::RepoPath),
+            "wrong finding: {:?}", errs[0]
+        );
+    }
+
+    /// GREEN: the same path, with the file present.
+    #[test]
+    fn live_repo_path_passes() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `theory/THEORY.md`")
+            .with_repo_file("theory/THEORY.md");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// THE GATE — the property the whole check's trustworthiness rests on.
+    ///
+    /// The identical body that fires in `dead_repo_path_is_caught` must be
+    /// SILENT when the repository is not cloned. Otherwise the check reports on
+    /// the reader's checkout rather than on the corpus, everyone learns to
+    /// ignore it, and it gets switched off — taking the true findings with it.
+    #[test]
+    fn repo_path_into_an_uncloned_repo_is_never_reported() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `theory/GHOST.md`");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(
+            report.errors_of(CheckKind::PathResolution).len(), 0,
+            "an uncloned repo must be unknowable, not broken"
+        );
+    }
+
+    /// A root segment that is both a repo name and a conventional in-repo
+    /// directory cannot be attributed, so it is not reported. `docs/` alone
+    /// produced 22 misattributions on the real corpus.
+    #[test]
+    fn ambiguous_root_segment_is_never_reported() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "see `docs/arch/landmarks.md`")
+            .with_repo("docs");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// A path shown inside a fence is an example, not a pointer.
+    #[test]
+    fn fenced_paths_are_out_of_scope() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "```\n`theory/GHOST.md`\n[x](./gone.md)\n```")
+            .with_repo("theory");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// The waiver excuses the path it NAMES — and only that one.
+    #[test]
+    fn waiver_clears_exactly_the_path_it_names() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body(
+                "alpha",
+                "uses `theory/GHOST.md` and `theory/OTHER.md`\n\n\
+                 pending-path: theory/GHOST.md — lands with the next theory pass",
+            )
+            .with_repo("theory");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::PathResolution);
+        assert_eq!(errs.len(), 1, "waiver must not silence the whole skill: {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::UnresolvedPath { path, .. } if path == "theory/OTHER.md"),
+            "wrong survivor: {:?}", errs[0]
+        );
+    }
+
+    /// A source locator addresses a position inside a file; the file is what
+    /// resolves. Without stripping, 24 live corpus pointers read as dead.
+    #[test]
+    fn source_locator_does_not_make_a_live_path_dead() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "see `samba/src/config.rs:190-205` and `samba/tests/e2e.rs::paced`")
+            .with_repo_file("samba/src/config.rs")
+            .with_repo_file("samba/tests/e2e.rs");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// One pointer repeated is one defect with one fix.
+    #[test]
+    fn a_repeated_dead_path_is_reported_once() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "`theory/GHOST.md` again `theory/GHOST.md` and `theory/GHOST.md`")
+            .with_repo("theory");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 1);
+    }
+
+    #[test]
+    fn path_resolution_check_disabled() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "`theory/GHOST.md`")
+            .with_repo("theory");
+        let config = CheckConfig { path_resolution: false, ..CheckConfig::default() };
+        let report = check_all(&source, &config).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// A source that cannot resolve paths reports NOTHING, rather than
+    /// reporting every path as broken. Unknown is not absent.
+    #[test]
+    fn a_source_without_an_oracle_reports_nothing() {
+        struct Blind(MockSource);
+        impl SkillSource for Blind {
+            fn skill_map(&self) -> anyhow::Result<SkillMap> { self.0.skill_map() }
+            fn skill_dirs(&self) -> anyhow::Result<BTreeSet<String>> { self.0.skill_dirs() }
+            fn skill_content(&self, name: &str) -> anyhow::Result<String> {
+                self.0.skill_content(name)
+            }
+            // path_oracle() left at its default None.
+        }
+        let inner = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "`theory/GHOST.md` and [x](./gone.md)")
+            .with_repo("theory");
+        let report = check_all(&Blind(inner), &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+    }
+
+    /// End-to-end on real disk: proves `discover_repo_root` finds the root that
+    /// holds sibling repositories, which the in-memory oracle cannot exercise.
+    #[test]
+    fn filesystem_path_resolution_end_to_end() {
+        use tempfile::TempDir;
+        let org = TempDir::new().unwrap();
+
+        // <org>/blackmatter/.git         — the repo the skills live in
+        // <org>/blackmatter/skills/alpha — the skill
+        // <org>/theory/THEORY.md         — a sibling repo with a real file
+        let repo = org.path().join("blackmatter");
+        let skills = repo.join("skills");
+        let skill_dir = skills.join("alpha");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(repo.join(".git"), "gitdir: elsewhere\n").unwrap();
+        fs::create_dir_all(org.path().join("theory")).unwrap();
+        fs::write(org.path().join("theory").join("THEORY.md"), "# T\n").unwrap();
+        fs::write(skills.join("skill-map.yaml"),
+            "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains:\n  meta: [alpha]\nskills:\n  alpha:\n    description: A test\n    domain: meta\n    repo: test\n"
+        ).unwrap();
+
+        let live = "see `theory/THEORY.md`";
+        let dead = "see `theory/THEORY.md` and `theory/GHOST.md` and [x](../beta/SKILL.md)";
+
+        fs::write(skill_dir.join("SKILL.md"),
+            format!("---\n{}\n---\n\n{live}\n", valid_fm("alpha"))).unwrap();
+        let green = check_path(&skills).unwrap();
+        assert_eq!(green.errors_of(CheckKind::PathResolution).len(), 0,
+            "live pointers must be silent: {:?}", green.errors);
+
+        fs::write(skill_dir.join("SKILL.md"),
+            format!("---\n{}\n---\n\n{dead}\n", valid_fm("alpha"))).unwrap();
+        let red = check_path(&skills).unwrap();
+        let errs = red.errors_of(CheckKind::PathResolution);
+        assert_eq!(errs.len(), 2, "expected the ghost and the bad link: {errs:?}");
+        assert!(errs.iter().any(|e| matches!(e,
+            LintError::UnresolvedPath { path, .. } if path == "theory/GHOST.md")));
+        assert!(errs.iter().any(|e| matches!(e,
+            LintError::UnresolvedPath { path, .. } if path == "../beta/SKILL.md")));
     }
 
     #[test]
@@ -931,6 +1233,8 @@ mod tests {
         assert!(cfg.frontmatter);
         assert!(cfg.map_integrity);
         assert!(cfg.duplicate_concerns);
+        // Default-ON: structural, objectively fixable, safe to gate CI on.
+        assert!(cfg.path_resolution);
         assert!(cfg.max_age_days.is_none());
         assert!(cfg.today.is_none());
     }

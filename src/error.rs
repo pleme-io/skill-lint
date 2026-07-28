@@ -24,6 +24,18 @@ pub enum CheckKind {
     /// objective right answer a machine can check — so it is always-on and
     /// gateable alongside sync/frontmatter/map-integrity.
     ListingBudget,
+    /// Do the paths a skill body points at actually exist?
+    ///
+    /// The structural half of the References family. Reference-FRESHNESS asks
+    /// "was the target re-verified more recently than the referrer?" — a
+    /// judgement only a human can honestly settle, so it is opt-in. Resolution
+    /// asks "does the target exist at all?" — an objective fact a machine
+    /// checks and a human fixes without manufacturing a claim, so it is
+    /// always-on and safe to gate CI on.
+    ///
+    /// A dead pointer costs an agent a whole session: it reads the skill, goes
+    /// looking for the file it names, and finds nothing to read.
+    PathResolution,
 }
 
 impl fmt::Display for CheckKind {
@@ -37,6 +49,31 @@ impl fmt::Display for CheckKind {
             Self::Staleness => write!(f, "staleness"),
             Self::References => write!(f, "references"),
             Self::ListingBudget => write!(f, "listing-budget"),
+            Self::PathResolution => write!(f, "path-resolution"),
+        }
+    }
+}
+
+/// How a path was written in a skill body.
+///
+/// Typed rather than a bare string because the two forms resolve against
+/// different bases and are gated differently: a relative link resolves from the
+/// skill's own directory and is always checked; a repo-relative path resolves
+/// from the root holding sibling repositories and is checked only when that
+/// repository is present locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PathForm {
+    /// A markdown link with an explicit `./` or `../` target.
+    RelativeLink,
+    /// A backticked `<repo>/<path>` naming a file in a sibling repository.
+    RepoPath,
+}
+
+impl fmt::Display for PathForm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RelativeLink => write!(f, "relative link"),
+            Self::RepoPath => write!(f, "repo-relative path"),
         }
     }
 }
@@ -54,6 +91,7 @@ impl FromStr for CheckKind {
             "staleness" => Ok(Self::Staleness),
             "references" => Ok(Self::References),
             "listing-budget" => Ok(Self::ListingBudget),
+            "path-resolution" => Ok(Self::PathResolution),
             _ => Err(ParseCheckKindError(s.to_owned())),
         }
     }
@@ -87,6 +125,14 @@ pub enum LintError {
         chars: usize,
         cap: usize,
         over: usize,
+    },
+
+    #[error("[{kind}] skill '{skill}': {form} '{path}' does not resolve — nothing exists at that path. Fix the pointer, drop it, or — if the target is legitimately absent — declare it in the skill body with a line reading `pending-path: {path} — <reason>`.")]
+    UnresolvedPath {
+        kind: CheckKind,
+        skill: String,
+        path: String,
+        form: PathForm,
     },
 
     #[error("[{kind}] skill '{skill}': frontmatter field '{field}' is missing")]
@@ -180,6 +226,7 @@ impl LintError {
             | Self::MissingLastModified { kind }
             | Self::Stale { kind, .. }
             | Self::DescriptionTooLong { kind, .. }
+            | Self::UnresolvedPath { kind, .. }
             | Self::ReferenceNewer { kind, .. } => *kind,
         }
     }
@@ -198,6 +245,36 @@ mod tests {
         assert_eq!(CheckKind::MapIntegrity.to_string(), "map-integrity");
         assert_eq!(CheckKind::Staleness.to_string(), "staleness");
         assert_eq!(CheckKind::References.to_string(), "references");
+        assert_eq!(CheckKind::ListingBudget.to_string(), "listing-budget");
+        assert_eq!(CheckKind::PathResolution.to_string(), "path-resolution");
+    }
+
+    #[test]
+    fn path_form_display() {
+        assert_eq!(PathForm::RelativeLink.to_string(), "relative link");
+        assert_eq!(PathForm::RepoPath.to_string(), "repo-relative path");
+    }
+
+    /// The message has to carry everything the reader needs to act: which
+    /// skill, which path, and the exact waiver line to write if the target is
+    /// legitimately absent. An error that only says "broken" sends the reader
+    /// hunting — the very cost this check exists to remove.
+    #[test]
+    fn unresolved_path_message_is_actionable() {
+        let err = LintError::UnresolvedPath {
+            kind: CheckKind::PathResolution,
+            skill: "iac-merge".into(),
+            path: "eclusa/docs/CLI.md".into(),
+            form: PathForm::RepoPath,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("[path-resolution]"), "kind tag missing: {msg}");
+        assert!(msg.contains("iac-merge"), "skill missing: {msg}");
+        assert!(msg.contains("repo-relative path"), "form missing: {msg}");
+        assert!(
+            msg.contains("pending-path: eclusa/docs/CLI.md"),
+            "waiver escape hatch missing: {msg}"
+        );
     }
 
     #[test]
@@ -217,6 +294,8 @@ mod tests {
             (LintError::MissingLastModified { kind: CheckKind::Version }, CheckKind::Version),
             (LintError::Stale { kind: CheckKind::Staleness, skill: "x".into(), last_verified: "d".into(), max_days: 90 }, CheckKind::Staleness),
             (LintError::ReferenceNewer { kind: CheckKind::References, skill: "x".into(), skill_date: "d1".into(), reference: "y".into(), ref_date: "d2".into() }, CheckKind::References),
+            (LintError::DescriptionTooLong { kind: CheckKind::ListingBudget, skill: "x".into(), chars: 2, cap: 1, over: 1 }, CheckKind::ListingBudget),
+            (LintError::UnresolvedPath { kind: CheckKind::PathResolution, skill: "x".into(), path: "a/b.md".into(), form: PathForm::RepoPath }, CheckKind::PathResolution),
         ];
         for (err, expected_kind) in cases {
             assert_eq!(err.kind(), expected_kind, "wrong kind for {err}");
@@ -281,6 +360,8 @@ mod tests {
             CheckKind::MapIntegrity,
             CheckKind::Staleness,
             CheckKind::References,
+            CheckKind::ListingBudget,
+            CheckKind::PathResolution,
         ];
         for kind in kinds {
             let s = kind.to_string();

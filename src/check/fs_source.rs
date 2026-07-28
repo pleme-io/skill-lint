@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::model::{SkillEntry, SkillMap};
 
-use super::SkillSource;
+use super::{PathOracle, SkillSource, normalize_lexical};
 
 /// Filesystem-backed [`SkillSource`] that reads skills and maps from disk.
 pub struct FsSource<'a> {
@@ -157,5 +157,63 @@ impl SkillSource for FsSource<'_> {
 
     fn origin(&self) -> String {
         self.effective_root().display().to_string()
+    }
+
+    fn path_oracle(&self) -> Option<Box<dyn PathOracle>> {
+        let root = self.effective_root();
+        // Absolute, so `../..` in a link can never walk off the front of a
+        // relative base and silently resolve somewhere else.
+        let skills_root = fs::canonicalize(&root).unwrap_or(root);
+        let repo_root = FsPathOracle::discover_repo_root(&skills_root);
+        Some(Box::new(FsPathOracle { skills_root, repo_root }))
+    }
+}
+
+/// On-disk [`PathOracle`].
+///
+/// Owns its roots rather than borrowing the source, so it can be handed to a
+/// lifetime-free [`super::CheckContext`].
+pub struct FsPathOracle {
+    /// Directory holding the skill subdirectories.
+    skills_root: PathBuf,
+    /// Directory holding sibling repositories, when one could be identified.
+    /// `None` disables every `<repo>/<path>` check — unknown, not absent.
+    repo_root: Option<PathBuf>,
+}
+
+impl FsPathOracle {
+    /// Find the root that holds sibling repositories.
+    ///
+    /// Walk up from the skills directory to the first ancestor carrying a
+    /// `.git` (the repository the skills live in); its parent is where sibling
+    /// repositories sit. Derived rather than configured, because a hand-set
+    /// root is one more thing that can drift out from under the check.
+    ///
+    /// `.git` is tested with `exists`, not `is_dir`: in a worktree or submodule
+    /// it is a file.
+    fn discover_repo_root(skills_root: &Path) -> Option<PathBuf> {
+        let mut current = skills_root;
+        loop {
+            if current.join(".git").exists() {
+                return current.parent().map(Path::to_path_buf);
+            }
+            current = current.parent()?;
+        }
+    }
+}
+
+impl PathOracle for FsPathOracle {
+    fn exists_near_skill(&self, skill: &str, rel: &str) -> bool {
+        normalize_lexical(&self.skills_root.join(skill).join(rel)).exists()
+    }
+
+    fn has_repo(&self, repo: &str) -> bool {
+        self.repo_root.as_ref().is_some_and(|root| root.join(repo).is_dir())
+    }
+
+    fn exists_under_repo_root(&self, rel: &str) -> bool {
+        self.repo_root
+            .as_ref()
+            .is_some_and(|root| normalize_lexical(&root.join(rel)).exists())
     }
 }

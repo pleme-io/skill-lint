@@ -42,6 +42,15 @@ enum Command {
         #[arg(long)]
         skip_map_integrity: bool,
 
+        /// Skip link/path resolution — do the paths skill bodies point at exist?
+        ///
+        /// For the case where the answer is knowably unavailable (linting a
+        /// corpus away from the repositories it points into), NOT for living
+        /// with dead pointers: a single legitimately-absent target is declared
+        /// with a `pending-path: <path> — <reason>` line in the skill body.
+        #[arg(long)]
+        skip_path_resolution: bool,
+
         /// Flag skills not verified within this many days as stale.
         #[arg(long)]
         max_age_days: Option<u32>,
@@ -65,6 +74,7 @@ fn main() -> Result<()> {
             skip_sync,
             skip_frontmatter,
             skip_map_integrity,
+            skip_path_resolution,
             map_dir,
             max_age_days,
             max_desc_chars,
@@ -75,6 +85,7 @@ fn main() -> Result<()> {
                 frontmatter: !skip_frontmatter,
                 map_integrity: !skip_map_integrity,
                 duplicate_concerns: !skip_map_integrity,
+                path_resolution: !skip_path_resolution,
                 max_age_days,
                 today: None,
                 max_desc_chars,
