@@ -15,6 +15,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Report the skill-listing budget — the agent-reachable `/context`.
+    ///
+    /// `/context`'s Skills row is authoritative but interactive: it has no
+    /// print-mode rendering (`claude -p "/context"` returns "Execution
+    /// error"), so no agent, script or CI job can read it. This recomputes the
+    /// same accounting from the frontmatter the platform reads.
+    ///
+    /// It does NOT guess which descriptions get dropped on overflow — that
+    /// ordering is by invocation frequency, which is not on disk.
+    Budget {
+        /// Skill home(s). Repeat for each. The live listing is the UNION of
+        /// every deployed home, so a single repo is a partial picture.
+        #[arg(long)]
+        skills_dir: Vec<PathBuf>,
+
+        /// Discover `*/skills` homes under this workspace root instead.
+        #[arg(long)]
+        discover_under: Option<PathBuf>,
+
+        /// Context window in tokens; the budget is a fraction of it.
+        #[arg(long, default_value_t = 1_000_000)]
+        window_tokens: usize,
+
+        /// Budget as a fraction of the window (`skillListingBudgetFraction`).
+        #[arg(long, default_value_t = skill_lint::budget::DEFAULT_BUDGET_FRACTION)]
+        budget_fraction: f64,
+
+        /// Exact character budget, overriding the window/fraction derivation
+        /// (`SLASH_COMMAND_TOOL_CHAR_BUDGET`).
+        #[arg(long)]
+        budget_chars: Option<usize>,
+
+        /// Per-entry cap (`skillListingMaxDescChars`).
+        #[arg(long, default_value_t = skill_lint::budget::DEFAULT_MAX_DESC_CHARS)]
+        max_desc_chars: usize,
+
+        /// Show this many largest entries.
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+
+        /// Exit non-zero when over budget, for use as a gate.
+        #[arg(long)]
+        strict: bool,
+    },
+
     /// Run checks: sync, frontmatter, map integrity, version.
     Check {
         /// Path to the skills directory (contains skill subdirs).
@@ -68,6 +113,80 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Budget {
+            skills_dir,
+            discover_under,
+            window_tokens,
+            budget_fraction,
+            budget_chars,
+            max_desc_chars,
+            top,
+            strict,
+        } => {
+            let homes = if let Some(root) = discover_under.as_deref() {
+                skill_lint::budget::discover_homes(root)
+            } else if skills_dir.is_empty() {
+                vec![PathBuf::from(".")]
+            } else {
+                skills_dir
+            };
+
+            let budget = budget_chars
+                .unwrap_or_else(|| skill_lint::budget::budget_from_window(window_tokens, budget_fraction));
+
+            let report = skill_lint::budget::compute(&homes, budget, max_desc_chars)
+                .context("computing skill-listing budget")?;
+
+            println!("homes scanned ({}):", report.homes.len());
+            for h in &report.homes {
+                println!("  {h}");
+            }
+            println!("\nskills:            {}", report.entries.len());
+            println!("listing chars:     {}", report.total_listing_chars);
+            println!("budget chars:      {}  (estimated from a {window_tokens}-token window at {budget_fraction}; chars/token is approximate)", report.budget_chars);
+
+            if report.over_budget() {
+                println!(
+                    "OVER BUDGET by {} chars ({:.1}x)",
+                    report.overage_chars(),
+                    report.ratio()
+                );
+                println!(
+                    "  On overflow the platform drops descriptions starting with the skills you\n  \
+                     invoke LEAST. This tool cannot know that order — invocation counts are not on\n  \
+                     disk — so it does not guess which entries go. Run /context for the real\n  \
+                     post-budget size."
+                );
+            } else {
+                println!("within budget ({} chars to spare)", report.budget_chars - report.total_listing_chars);
+            }
+
+            let truncated = report.truncated();
+            if truncated.is_empty() {
+                println!("\nper-entry cap ({}): all entries fit", report.max_desc_chars);
+            } else {
+                println!(
+                    "\nper-entry cap ({}): {} entries OVER, discarding {} chars outright",
+                    report.max_desc_chars,
+                    truncated.len(),
+                    report.total_truncated_chars()
+                );
+                for e in &truncated {
+                    println!("  {:6} over  {}", e.truncated_chars, e.name);
+                }
+            }
+
+            println!("\nlargest {top}:");
+            for e in report.entries.iter().take(top) {
+                println!("  {:6}  {}", e.listing_chars, e.name);
+            }
+
+            if strict && report.over_budget() {
+                process::exit(1);
+            }
+            Ok(())
+        }
+
         Command::Check {
             skills_dir,
             skip_version,
