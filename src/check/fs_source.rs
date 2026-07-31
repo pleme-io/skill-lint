@@ -216,4 +216,11 @@ impl PathOracle for FsPathOracle {
             .as_ref()
             .is_some_and(|root| normalize_lexical(&root.join(rel)).exists())
     }
+
+    fn org_segment(&self) -> Option<String> {
+        self.repo_root
+            .as_ref()?
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }
 }

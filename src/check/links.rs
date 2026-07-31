@@ -269,13 +269,79 @@ impl Checker for PathResolutionChecker {
                 let resolves = match reference.form {
                     PathForm::RelativeLink => oracle.exists_near_skill(name, &reference.path),
                     PathForm::RepoPath => {
-                        let root = reference.path.split('/').next().unwrap_or_default();
-                        // The gate: an uncloned repo, or a segment that could
-                        // equally be an in-repo directory, is unknowable — skip.
-                        if AMBIGUOUS_ROOT_SEGMENTS.contains(&root) || !oracle.has_repo(root) {
-                            continue;
+                        // Two legitimate authored readings of the same string:
+                        // bare `<repo>/<path>` and org-qualified
+                        // `<org>/<repo>/<path>`. A pointer that resolves under
+                        // EITHER is not dead, so try both and only report when
+                        // every knowable reading says absent.
+                        let org_stripped = oracle.org_segment().and_then(|org| {
+                            reference
+                                .path
+                                .strip_prefix(org.as_str())
+                                .and_then(|rest| rest.strip_prefix('/'))
+                                .map(str::to_owned)
+                        });
+
+                        // `None` = unknowable, so it contributes no verdict.
+                        //
+                        // `root_may_be_ambiguous` is false for an org-qualified
+                        // reading, and that is the whole reason the org form is
+                        // worth resolving: AMBIGUOUS_ROOT_SEGMENTS exists because a
+                        // bare `actions/x` might mean the `actions` repo or some
+                        // repo's own `actions/` directory. Writing `pleme-io/actions`
+                        // settles that — the author named the org — so the
+                        // ambiguity exclusion must not fire on it.
+                        let judge = |candidate: &str, root_may_be_ambiguous: bool| {
+                            let mut segments = candidate.split('/');
+                            let root = segments.next().unwrap_or_default();
+                            // A lone segment carrying an EXTENSION is a FILE at the
+                            // org root — `pleme-io/CLAUDE.md` is the org's own
+                            // CLAUDE.md, not a repo named `CLAUDE.md`. Fully
+                            // knowable, so the repo gate (which exists only to
+                            // excuse uncloned repos) must not swallow it.
+                            //
+                            // The dot must not be leading: `.github` is a
+                            // repository (the org's special repo), not a file, so a
+                            // dotfile-shaped name stays behind the repo gate and an
+                            // uncloned `.github` reads as unknowable rather than
+                            // dead.
+                            let has_extension = root.rfind('.').is_some_and(|at| at > 0);
+                            if segments.next().is_none() && has_extension {
+                                return Some(oracle.exists_under_repo_root(candidate));
+                            }
+                            if (root_may_be_ambiguous
+                                && AMBIGUOUS_ROOT_SEGMENTS.contains(&root))
+                                || !oracle.has_repo(root)
+                            {
+                                return None;
+                            }
+                            Some(oracle.exists_under_repo_root(candidate))
+                        };
+
+                        // The org-qualified reading is PRIMARY when the path is
+                        // org-qualified — it is what the author wrote and meant. The
+                        // as-written reading is the fallback for the one case that
+                        // makes it meaningful: a repository whose name equals the
+                        // org's, which `tend` really does clone
+                        // (github.com/pleme-io/pleme-io).
+                        let verdict = match org_stripped.as_deref() {
+                            Some(stripped) => judge(stripped, false).or_else(|| {
+                                // ONE-WAY fallback. The as-written reading may only
+                                // rescue a pointer to "alive", never condemn it to
+                                // "dead": that `<org>/pleme-io/.github` is absent
+                                // says nothing about the org's `.github` repo, which
+                                // is merely uncloned. `filter` drops a negative back
+                                // to unknowable so an unresolvable primary stays
+                                // silent instead of borrowing a verdict from a
+                                // reading nobody meant.
+                                judge(&reference.path, true).filter(|&present| present)
+                            }),
+                            None => judge(&reference.path, true),
+                        };
+                        match verdict {
+                            Some(resolved) => resolved,
+                            None => continue,
                         }
-                        oracle.exists_under_repo_root(&reference.path)
                     }
                 };
                 if !resolves && reported.insert(reference) {

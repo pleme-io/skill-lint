@@ -102,6 +102,23 @@ pub trait PathOracle {
     /// Is `rel` — a `<repo>/<path>` string — present under the root that holds
     /// sibling repositories?
     fn exists_under_repo_root(&self, rel: &str) -> bool;
+
+    /// The name of the directory that holds the sibling repositories, when one
+    /// could be identified.
+    ///
+    /// Skills write the repo-relative form BOTH ways — bare `<repo>/<path>` and
+    /// org-qualified `<org>/<repo>/<path>` — and both are legitimate authored
+    /// conventions, not a typo class. Measured on the live corpus 2026-07-30:
+    /// 323 bare against 138 org-qualified.
+    ///
+    /// Returning the org's own directory name is what lets the checker try the
+    /// org-qualified reading. Without it the leading `<org>` segment is taken as
+    /// a repository name, and since no repo by that name normally exists the
+    /// whole org-qualified class hits the unknowable gate and is **silently
+    /// skipped** — a vacuous check on ~30% of the corpus, indistinguishable from
+    /// passing. `None` disables the org-qualified reading only; the bare form
+    /// still resolves.
+    fn org_segment(&self) -> Option<String>;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -683,6 +700,89 @@ mod tests {
             .with_skill("alpha", "meta", &valid_fm("alpha"))
             .with_body("alpha", "canonical: `theory/THEORY.md`")
             .with_repo_file("theory/THEORY.md");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    // ── The org-qualified reading ────────────────────────────────────────
+    //
+    // Skills write the repo-relative form BOTH ways, and both are real authored
+    // conventions: measured on the live corpus 2026-07-30, 323 bare
+    // `<repo>/<path>` against 138 org-qualified `<org>/<repo>/<path>`.
+    //
+    // Before this was handled, the org-qualified third of the corpus was
+    // SILENTLY SKIPPED: the leading `pleme-io` segment was read as a repository
+    // name, no repo by that name existed, so every one of those 138 pointers hit
+    // the unknowable gate and contributed nothing. The check passed on them
+    // without ever looking — vacuous, and indistinguishable from working, which
+    // is why it went unnoticed. `dead_org_qualified_path_is_caught` below is the
+    // red run that proves it is no longer vacuous.
+
+    /// GREEN: an org-qualified path whose file exists is silent.
+    #[test]
+    fn live_org_qualified_path_passes() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `pleme-io/theory/THEORY.md`")
+            .with_org("pleme-io")
+            .with_repo_file("theory/THEORY.md");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
+    }
+
+    /// RED: an org-qualified path at a file that is not there IS caught.
+    ///
+    /// This is the test that would have failed before the org-qualified reading
+    /// existed — not by reporting the wrong thing, but by reporting nothing at
+    /// all.
+    #[test]
+    fn dead_org_qualified_path_is_caught() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `pleme-io/theory/GHOST.md`")
+            .with_org("pleme-io")
+            .with_repo("theory");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::PathResolution);
+        assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::UnresolvedPath { path, form, .. }
+                if path == "pleme-io/theory/GHOST.md" && *form == PathForm::RepoPath),
+            "wrong finding: {:?}", errs[0]
+        );
+    }
+
+    /// GREEN: the real-world trigger — a repo whose name equals the org's.
+    ///
+    /// `github.com/pleme-io/pleme-io` is a real repository, so `tend` clones it
+    /// to `<org>/pleme-io` and the org segment starts satisfying `has_repo`.
+    /// That flipped all 138 org-qualified pointers from silently-skipped to
+    /// false-positive in one step (observed 2026-07-30: 202 findings, every one
+    /// of them wrong). Trying both readings and accepting either keeps this
+    /// collision harmless in both directions.
+    #[test]
+    fn org_named_repo_does_not_break_org_qualified_paths() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `pleme-io/theory/THEORY.md`")
+            .with_org("pleme-io")
+            .with_repo("pleme-io") // the empty clone that collides with the org dir
+            .with_repo_file("theory/THEORY.md");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(
+            report.errors_of(CheckKind::PathResolution).len(),
+            0,
+            "an org-named repo must not turn a live org-qualified pointer into a finding"
+        );
+    }
+
+    /// THE GATE, org-qualified arm: unknown is still not absent.
+    #[test]
+    fn org_qualified_path_into_an_uncloned_repo_is_never_reported() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "canonical: `pleme-io/theory/GHOST.md`")
+            .with_org("pleme-io");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
     }

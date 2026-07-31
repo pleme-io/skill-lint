@@ -20,6 +20,8 @@ pub struct MockSource {
     pub repo_files: BTreeSet<PathBuf>,
     /// Files simulated under the skills root, e.g. `alpha/references/a.md`.
     pub skill_files: BTreeSet<PathBuf>,
+    /// Name of the directory holding the repos; enables the org-qualified reading.
+    pub org: Option<String>,
 }
 
 impl MockSource {
@@ -37,6 +39,7 @@ impl MockSource {
             repos: BTreeSet::new(),
             repo_files: BTreeSet::new(),
             skill_files: BTreeSet::new(),
+            org: None,
         }
     }
 
@@ -49,6 +52,15 @@ impl MockSource {
     #[must_use]
     pub fn with_repo(mut self, repo: &str) -> Self {
         self.repos.insert(repo.into());
+        self
+    }
+
+    /// Name the directory that holds the repos, enabling the org-qualified
+    /// `<org>/<repo>/<path>` reading. Absent by default so existing tests keep
+    /// exercising the bare form alone.
+    #[must_use]
+    pub fn with_org(mut self, org: &str) -> Self {
+        self.org = Some(org.into());
         self
     }
 
@@ -161,6 +173,7 @@ impl SkillSource for MockSource {
             repos: self.repos.clone(),
             repo_files: self.repo_files.clone(),
             skill_files: self.skill_files.clone(),
+            org: self.org.clone(),
         }))
     }
 }
@@ -171,6 +184,9 @@ pub struct MockPathOracle {
     repos: BTreeSet<String>,
     repo_files: BTreeSet<PathBuf>,
     skill_files: BTreeSet<PathBuf>,
+    /// Name of the directory holding the repos, so the org-qualified reading is
+    /// exercisable in-memory. `None` models a source with no identifiable root.
+    org: Option<String>,
 }
 
 impl PathOracle for MockPathOracle {
@@ -183,6 +199,8 @@ impl PathOracle for MockPathOracle {
     fn exists_under_repo_root(&self, rel: &str) -> bool {
         self.repo_files.contains(&normalize_lexical(&PathBuf::from(rel)))
     }
+
+    fn org_segment(&self) -> Option<String> { self.org.clone() }
 }
 
 /// Valid frontmatter string for a given skill name.
