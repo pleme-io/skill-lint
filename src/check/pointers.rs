@@ -23,13 +23,21 @@
 //!    `references:` edges. The listing is in [`super::CheckContext`]
 //!    unconditionally, so this check needs no sibling repositories and no
 //!    writable root.
-//! 2. **It is therefore not disableable.** `--skip-path-resolution` exists for
-//!    one honest case: a corpus linted somewhere its sibling repositories are
-//!    not checked out, where the answer is knowably unavailable. That case
-//!    cannot arise here — the skills and the map travel together, in the working
-//!    tree and inside the build sandbox alike — so a flag to switch this off
-//!    would only ever be used to live with a dead pointer, which is what the
-//!    scoped waiver below is for.
+//! 2. **It has no disable FLAG** — living with a dead pointer is what the
+//!    scoped `pending-skill-pointer:` waiver below is for, not a switch.
+//!
+//!    This point previously read "it is therefore not disableable", on the
+//!    reasoning that the knowably-unavailable case "cannot arise here — the
+//!    skills and the map travel together". **Corrected 2026-07-31: it does
+//!    arise.** A caller may lint a GATED SUBSET with no map at all
+//!    (`blackmatter-claude`, whose fleet map lives in `blackmatter-pleme`),
+//!    which strips the federating half of the oracle and made four live
+//!    cross-repo pointers report as dead — blocking a whole system closure.
+//!    So the checker now self-suppresses on an EMPTY map, the same way an
+//!    absent [`super::CheckContext::oracle`] already silences path resolution.
+//!    See [`SkillPointerChecker`] for the measurement. That is a property of
+//!    the input, not an operator-facing off-switch: where a map exists, the
+//!    check is still mandatory and still catches dead pointers.
 //!
 //! # The matcher is calibrated, not guessed
 //!
@@ -242,12 +250,56 @@ fn waived_token(line: &str) -> Option<String> {
 /// map's own `references:` edges use, because it is the same defect: a skill
 /// names a skill that does not exist. Only the [`CheckKind`] differs, which is
 /// what tells the operator whether to fix a YAML edge or a line of prose.
+///
+/// # An EMPTY map means the oracle is knowably partial — report nothing
+///
+/// The module docs above claim this check "is therefore not disableable",
+/// reasoning that "the skills and the map travel together, in the working tree
+/// and inside the build sandbox alike — so that case cannot arise here."
+///
+/// **Measured 2026-07-31: it does arise, and the claim was false.**
+/// `blackmatter-claude`'s `skill-map-check` runs
+///
+/// ```text
+/// skill-lint check --skills-dir <GATED SUBSET> --map-dir <EMPTY> \
+///   --skip-sync --skip-map-integrity --skip-version
+/// ```
+///
+/// because that repo has **no local `skill-map.d`** — the fleet map lives in
+/// `blackmatter-pleme` — and it deliberately lints a *gated subset* (9 of 22
+/// skills) rather than the whole corpus. Both halves of the oracle are thus
+/// incomplete at once, and the federation this checker's own docs rely on is
+/// simply absent. The result was four findings against pointers that are all
+/// perfectly live — `/rust-tool`, `/rust-service`, `/helm-k8s-charts`,
+/// `/claude-skills`, every one of them a top-level key in the fleet map
+/// (`rust.yaml:8`, `rust.yaml:22`, `infrastructure.yaml:33`, `meta.yaml:1`) —
+/// which blocked the whole darwin system closure from building.
+///
+/// So an empty map gets the same treatment [`super::CheckContext::oracle`]
+/// already gives an absent path oracle: when the answer is *knowably
+/// unavailable*, report nothing rather than report a guess. This is not a way
+/// to live with dead pointers — that is what `pending-skill-pointer:` is for —
+/// and it costs no coverage where the check can actually work: the fleet-wide
+/// gate passes the real map, so `map_names` is populated there and every
+/// pointer is still resolved.
+///
+/// The alternative — "fix" the four skills by deleting correct
+/// cross-references to green a gate — is the vacuous fix this corpus exists to
+/// prevent.
 pub struct SkillPointerChecker;
 
 impl Checker for SkillPointerChecker {
     fn kind(&self) -> CheckKind { CheckKind::SkillPointer }
 
     fn check(&self, ctx: &CheckContext, errors: &mut Vec<LintError>) {
+        // No map at all => the federating half of the oracle is absent and the
+        // listing is knowably partial, so every cross-repo and out-of-subset
+        // pointer would report as dead. Silence beats a confident wrong answer.
+        // See the type docs for the measured case that added this.
+        if ctx.map_names.is_empty() {
+            return;
+        }
+
         let known: BTreeSet<&str> = ctx
             .dir_names
             .iter()

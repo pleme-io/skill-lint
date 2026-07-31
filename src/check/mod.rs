@@ -1004,6 +1004,37 @@ mod tests {
         assert_eq!(report.errors_of(CheckKind::SkillPointer).len(), 0);
     }
 
+    /// GREEN: an EMPTY map makes the oracle knowably partial — report nothing.
+    ///
+    /// Regression for the case measured 2026-07-31, which blocked the whole
+    /// darwin system closure from building. `blackmatter-claude` has no local
+    /// `skill-map.d` (the fleet map lives in `blackmatter-pleme`) and lints a
+    /// GATED SUBSET, so it runs `--map-dir <empty> --skip-sync
+    /// --skip-map-integrity --skip-version`. Both halves of the oracle were
+    /// incomplete at once and four LIVE cross-repo pointers — `/rust-tool`,
+    /// `/rust-service`, `/helm-k8s-charts`, `/claude-skills`, each a top-level
+    /// key in the fleet map — were reported dead.
+    ///
+    /// This is NOT a blanket off-switch, and the pairing is what proves it:
+    /// `a_dead_slash_pointer_is_caught` above keeps its map and still goes RED
+    /// on a genuinely dead pointer. Only the knowably-unavailable case is
+    /// silenced, exactly as an absent `PathOracle` already silences path
+    /// resolution.
+    #[test]
+    fn an_empty_map_suppresses_pointer_findings() {
+        let mut source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "Sibling practice: `/vocabulary-bridging`.");
+        source.map.skills.clear();
+
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(
+            report.errors_of(CheckKind::SkillPointer).len(),
+            0,
+            "an absent map must not manufacture dead-pointer findings"
+        );
+    }
+
     /// THE MEASUREMENT that justifies a separate check existing at all.
     ///
     /// The identical body is invisible to path resolution in BOTH of its
