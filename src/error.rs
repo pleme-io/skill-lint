@@ -36,6 +36,27 @@ pub enum CheckKind {
     /// A dead pointer costs an agent a whole session: it reads the skill, goes
     /// looking for the file it names, and finds nothing to read.
     PathResolution,
+    /// Do the `/skill-name` slash-commands a body names still resolve?
+    ///
+    /// Distinct from [`Self::PathResolution`], which resolves filesystem paths.
+    /// A bare `` `/vocabularify` `` is neither a markdown link nor a
+    /// `<repo>/<path>`, so the path matcher rejects it outright and the class
+    /// was **structurally invisible** rather than merely under-gated: measured
+    /// 2026-07-31, four dead pointers were present while the run passed green
+    /// both with and without `--skip-path-resolution`.
+    ///
+    /// Resolves against the skill listing, which travels with the corpus, so
+    /// unlike path resolution it is never knowably-unavailable and has no
+    /// skip flag. A token that is legitimately not a skill (an HTTP route
+    /// shares the form) is declared with a scoped `pending-skill-pointer:`.
+    SkillPointer,
+    /// Is every declared tier ledger honest about its ceilings?
+    ///
+    /// `selo::SealTier::OnlyMitigated(Ceiling)` makes an unnamed-ceiling
+    /// mitigation unconstructible in Rust. The ledgers that get written are
+    /// markdown tables, which typecheck against nothing — so the same
+    /// constraint is enforced here, over `selo`'s vocabulary.
+    TierLedger,
     /// Per-entry budget of a `CLAUDE.md` index section.
     ///
     /// An index section states its own contract — "each line: rule + skill +
@@ -63,6 +84,8 @@ impl fmt::Display for CheckKind {
             Self::References => write!(f, "references"),
             Self::ListingBudget => write!(f, "listing-budget"),
             Self::PathResolution => write!(f, "path-resolution"),
+            Self::SkillPointer => write!(f, "skill-pointer"),
+            Self::TierLedger => write!(f, "tier-ledger"),
             Self::ClaudeMdEntry => write!(f, "claudemd-entry"),
             Self::ClaudeMdFile => write!(f, "claudemd-file"),
         }
@@ -107,6 +130,8 @@ impl FromStr for CheckKind {
             "references" => Ok(Self::References),
             "listing-budget" => Ok(Self::ListingBudget),
             "path-resolution" => Ok(Self::PathResolution),
+            "skill-pointer" => Ok(Self::SkillPointer),
+            "tier-ledger" => Ok(Self::TierLedger),
             "claudemd-entry" => Ok(Self::ClaudeMdEntry),
             "claudemd-file" => Ok(Self::ClaudeMdFile),
             _ => Err(ParseCheckKindError(s.to_owned())),
@@ -214,12 +239,39 @@ pub enum LintError {
         expected: String,
     },
 
+    /// A skill names a skill that does not exist.
+    ///
+    /// Raised by TWO checks against the same oracle, distinguished by `kind`:
+    /// `map-integrity` for a `references:` edge in the YAML, `skill-pointer`
+    /// for a `/name` written in a body's prose. One defect, one message; the
+    /// tag says which file to open.
     #[error("[{kind}] skill '{skill}' references unknown skill '{target}'")]
     BrokenReference {
         kind: CheckKind,
         skill: String,
         target: String,
     },
+
+    #[error("[{kind}] skill '{skill}': tier-ledger row '{subject}' claims only-mitigated without naming a ceiling. A mitigation whose ceiling is unnamed is a tier rounded up — say WHY it cannot be higher, as `only-mitigated (C1..C6)`. selo makes this unconstructible in Rust (`SealTier::OnlyMitigated(Ceiling)`); a markdown table has to be told.")]
+    LedgerMitigationUnbounded {
+        kind: CheckKind,
+        skill: String,
+        subject: String,
+    },
+
+    #[error("[{kind}] skill '{skill}': tier-ledger row '{subject}' grades '{tier}', which is not a seal tier. The vocabulary is selo's and closed: truly-unrep | parse-time-rejected | only-mitigated (C1..C6). If this table grades milestones or recon results rather than seals, it is not a tier ledger — drop the <!-- tier-ledger --> marker.")]
+    LedgerTierUnknown {
+        kind: CheckKind,
+        skill: String,
+        subject: String,
+        tier: String,
+    },
+
+    #[error("[{kind}] skill '{skill}' is required to declare a tier-honest ledger and declares none. Add a `<!-- tier-ledger -->` marker above a table whose last column is the tier: truly-unrep | parse-time-rejected | only-mitigated (C1..C6).")]
+    LedgerMissing { kind: CheckKind, skill: String },
+
+    #[error("[{kind}] skill '{skill}': a `<!-- tier-ledger -->` marker is followed by no table. A marker pointing at nothing reads as a graded ledger while grading nothing — put the table under it, or remove the marker.")]
+    LedgerMalformed { kind: CheckKind, skill: String },
 
     #[error("[{kind}] skill '{name}' not listed in any domain")]
     OrphanDomain { kind: CheckKind, name: String },
@@ -287,6 +339,10 @@ impl LintError {
             | Self::MissingFrontmatter { kind, .. }
             | Self::NameMismatch { kind, .. }
             | Self::BrokenReference { kind, .. }
+            | Self::LedgerMitigationUnbounded { kind, .. }
+            | Self::LedgerTierUnknown { kind, .. }
+            | Self::LedgerMissing { kind, .. }
+            | Self::LedgerMalformed { kind, .. }
             | Self::OrphanDomain { kind, .. }
             | Self::GhostDomainEntry { kind, .. }
             | Self::DomainMismatch { kind, .. }
@@ -316,6 +372,8 @@ mod tests {
         assert_eq!(CheckKind::References.to_string(), "references");
         assert_eq!(CheckKind::ListingBudget.to_string(), "listing-budget");
         assert_eq!(CheckKind::PathResolution.to_string(), "path-resolution");
+        assert_eq!(CheckKind::SkillPointer.to_string(), "skill-pointer");
+        assert_eq!(CheckKind::TierLedger.to_string(), "tier-ledger");
         assert_eq!(CheckKind::ClaudeMdEntry.to_string(), "claudemd-entry");
         assert_eq!(CheckKind::ClaudeMdFile.to_string(), "claudemd-file");
     }
@@ -427,6 +485,11 @@ mod tests {
             (LintError::ReferenceNewer { kind: CheckKind::References, skill: "x".into(), skill_date: "d1".into(), reference: "y".into(), ref_date: "d2".into() }, CheckKind::References),
             (LintError::DescriptionTooLong { kind: CheckKind::ListingBudget, skill: "x".into(), chars: 2, cap: 1, over: 1 }, CheckKind::ListingBudget),
             (LintError::UnresolvedPath { kind: CheckKind::PathResolution, skill: "x".into(), path: "a/b.md".into(), form: PathForm::RepoPath }, CheckKind::PathResolution),
+            (LintError::BrokenReference { kind: CheckKind::SkillPointer, skill: "x".into(), target: "y".into() }, CheckKind::SkillPointer),
+            (LintError::LedgerMitigationUnbounded { kind: CheckKind::TierLedger, skill: "x".into(), subject: "s".into() }, CheckKind::TierLedger),
+            (LintError::LedgerTierUnknown { kind: CheckKind::TierLedger, skill: "x".into(), subject: "s".into(), tier: "t".into() }, CheckKind::TierLedger),
+            (LintError::LedgerMissing { kind: CheckKind::TierLedger, skill: "x".into() }, CheckKind::TierLedger),
+            (LintError::LedgerMalformed { kind: CheckKind::TierLedger, skill: "x".into() }, CheckKind::TierLedger),
             (LintError::NoDocsScanned { kind: CheckKind::Discovery, searched: "x".into() }, CheckKind::Discovery),
             (LintError::IndexEntryTooLong { kind: CheckKind::ClaudeMdEntry, file: "f".into(), entry: "e".into(), line: 1, bytes: 2, cap: 1, over: 1 }, CheckKind::ClaudeMdEntry),
             (LintError::IndexEntryGrew { kind: CheckKind::ClaudeMdEntry, file: "f".into(), entry: "e".into(), line: 1, bytes: 2, recorded: 1, grew: 1 }, CheckKind::ClaudeMdEntry),
@@ -498,6 +561,8 @@ mod tests {
             CheckKind::References,
             CheckKind::ListingBudget,
             CheckKind::PathResolution,
+            CheckKind::SkillPointer,
+            CheckKind::TierLedger,
             CheckKind::ClaudeMdEntry,
             CheckKind::ClaudeMdFile,
         ];

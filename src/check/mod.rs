@@ -1,6 +1,8 @@
 mod checkers;
 mod fs_source;
+pub mod ledger;
 pub mod links;
+pub mod pointers;
 pub mod testing;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +16,9 @@ pub use checkers::{
     ReferencesFreshnessChecker, StalenessChecker, SyncChecker, VersionChecker,
 };
 pub use fs_source::FsSource;
+pub use ledger::TierLedgerChecker;
 pub use links::PathResolutionChecker;
+pub use pointers::SkillPointerChecker;
 
 /// Lexically resolve `.` and `..` without touching the filesystem.
 ///
@@ -233,7 +237,21 @@ pub struct CheckConfig {
     /// exposes it as a setting (`skillListingMaxDescChars`); the default
     /// mirrors the documented platform default.
     pub max_desc_chars: usize,
+    /// Skills that MUST declare a `<!-- tier-ledger -->`.
+    ///
+    /// Declarative rather than hardcoded: which skills owe a ledger is doctrine,
+    /// and doctrine belongs in the gate that states it, not in this crate. Empty
+    /// validates every declared ledger and requires none.
+    pub require_tier_ledger: BTreeSet<String>,
 }
+
+// NOTE: there is deliberately no `skill_pointers` or `tier_ledger` switch here.
+// A skip flag is honest only when the answer can be knowably unavailable, which
+// is the whole case for `path_resolution` (sibling repos absent from a build
+// sandbox). Both of these resolve against data that travels WITH the corpus —
+// the skill listing and the body itself — so a switch could only ever be used
+// to live with a finding, and each has a scoped, reason-carrying waiver for
+// that: `pending-skill-pointer:` and dropping the ledger marker.
 
 impl Default for CheckConfig {
     fn default() -> Self {
@@ -248,6 +266,7 @@ impl Default for CheckConfig {
             today: None,
             // Platform default for `skillListingMaxDescChars`.
             max_desc_chars: 1536,
+            require_tier_ledger: BTreeSet::new(),
         }
     }
 }
@@ -306,6 +325,11 @@ pub fn check_all(source: &dyn SkillSource, config: &CheckConfig) -> anyhow::Resu
         // objective fact, so this rides with the always-on suite rather than
         // with the freshness checks gated below.
         Box::new(PathResolutionChecker),
+        // Structural too, and — unlike path resolution — never unavailable:
+        // both resolve against data carried by the corpus itself, so neither
+        // appears in the disable match below.
+        Box::new(SkillPointerChecker),
+        Box::new(TierLedgerChecker { required: config.require_tier_ledger.clone() }),
     ];
 
     if let Some(max_days) = config.max_age_days {
@@ -945,6 +969,214 @@ mod tests {
             LintError::UnresolvedPath { path, .. } if path == "theory/GHOST.md")));
         assert!(errs.iter().any(|e| matches!(e,
             LintError::UnresolvedPath { path, .. } if path == "../beta/SKILL.md")));
+    }
+
+    // ─── Skill pointers ──────────────────────────────────────────
+    //
+    // Pinned in BOTH directions, like path resolution above. The class this
+    // catches was not merely un-gated before — it was structurally invisible:
+    // `path_resolution_cannot_see_a_slash_pointer` below is the measurement.
+
+    /// RED: a `/name` in prose that names no skill is caught.
+    #[test]
+    fn a_dead_slash_pointer_is_caught() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "Sibling practice: `/vocabulary-bridging`.");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::SkillPointer);
+        assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::BrokenReference { target, .. }
+                if target == "vocabulary-bridging"),
+            "wrong finding: {:?}", errs[0]
+        );
+    }
+
+    /// GREEN: the same pointer, once the skill exists.
+    #[test]
+    fn a_live_slash_pointer_passes() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_skill("vocabulary-bridging", "meta", &valid_fm("vocabulary-bridging"))
+            .with_body("alpha", "Sibling practice: `/vocabulary-bridging`.");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::SkillPointer).len(), 0);
+    }
+
+    /// THE MEASUREMENT that justifies a separate check existing at all.
+    ///
+    /// The identical body is invisible to path resolution in BOTH of its
+    /// configurations: a bare `/name` is not a markdown link and has no second
+    /// segment, so the repo-path matcher rejects it. Before this checker the
+    /// corpus ran green with four such pointers dead.
+    #[test]
+    fn path_resolution_cannot_see_a_slash_pointer() {
+        let body = "Sibling practice: `/vocabulary-bridging` and **/vocabulary-bridging**.";
+        for path_resolution in [true, false] {
+            let source = MockSource::new()
+                .with_skill("alpha", "meta", &valid_fm("alpha"))
+                .with_body("alpha", body);
+            let config = CheckConfig { path_resolution, ..CheckConfig::default() };
+            let report = check_all(&source, &config).unwrap();
+            assert_eq!(
+                report.errors_of(CheckKind::PathResolution).len(),
+                0,
+                "path resolution claimed to see a slash pointer (path_resolution={path_resolution})"
+            );
+            // …and the new check sees it either way — this is the property the
+            // Nix gate depends on, since it always passes --skip-path-resolution.
+            assert_eq!(
+                report.errors_of(CheckKind::SkillPointer).len(),
+                1,
+                "skill-pointer must not be disabled by path_resolution={path_resolution}"
+            );
+        }
+    }
+
+    /// A pointer at a skill owned by a SIBLING REPO resolves.
+    ///
+    /// The map federates entries whose `repo` is another repository; they have
+    /// no local directory but are live routing targets. Resolving against
+    /// directories alone would report every cross-repo pointer as dead — 1 of
+    /// the 13 candidates on the real corpus.
+    #[test]
+    fn a_pointer_at_a_cross_repo_skill_resolves() {
+        let mut source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "profile: (/drive-akeyless-forward, telos private)");
+        source.map.skills.insert("drive-akeyless-forward".into(), crate::model::SkillEntry {
+            description: "Owned by another repo".into(),
+            domain: "meta".into(),
+            repo: "blackmatter-akeyless".into(),
+            concerns: vec![],
+            references: vec![],
+        });
+        source.map.domains.get_mut("meta").unwrap().push("drive-akeyless-forward".into());
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::SkillPointer).len(), 0);
+    }
+
+    #[test]
+    fn a_waived_pointer_is_silent_and_the_waiver_is_scoped() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body(
+                "alpha",
+                "routes `/org-root` and `/other-ghost`\n\n\
+                 pending-skill-pointer: /org-root — an HTTP route, not a slash command",
+            );
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::SkillPointer);
+        assert_eq!(errs.len(), 1, "waiver must not silence the whole skill: {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::BrokenReference { target, .. } if target == "other-ghost"),
+            "wrong survivor: {:?}", errs[0]
+        );
+    }
+
+    #[test]
+    fn a_repeated_dead_pointer_is_reported_once() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body("alpha", "`/ghost-skill` then **/ghost-skill** then /ghost-skill again");
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::SkillPointer).len(), 1);
+    }
+
+    // ─── Tier ledger ─────────────────────────────────────────────
+
+    /// RED: the row shape `selo` makes unconstructible in Rust.
+    #[test]
+    fn a_mitigation_row_without_a_ceiling_is_caught() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body(
+                "alpha",
+                "<!-- tier-ledger -->\n\n\
+                 | invariant | realization | tier |\n\
+                 |---|---|---|\n\
+                 | a bad tag | typed enum | truly-unrep |\n\
+                 | a live write | a shadow gate | only-mitigated |\n",
+            );
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        let errs = report.errors_of(CheckKind::TierLedger);
+        assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
+        assert!(
+            matches!(errs[0], LintError::LedgerMitigationUnbounded { subject, .. }
+                if subject == "a live write"),
+            "wrong finding: {:?}", errs[0]
+        );
+    }
+
+    /// GREEN: the same ledger with the ceiling named.
+    #[test]
+    fn a_named_ceiling_passes() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body(
+                "alpha",
+                "<!-- tier-ledger -->\n\n\
+                 | invariant | realization | tier |\n\
+                 |---|---|---|\n\
+                 | a live write | a shadow gate | only-mitigated (C2) |\n",
+            );
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::TierLedger).len(), 0);
+    }
+
+    /// A table nobody declared a ledger is not graded. Six of the seven
+    /// `tier`-columned tables in the real corpus are milestone or recon tables.
+    #[test]
+    fn an_undeclared_table_is_left_alone() {
+        let source = MockSource::new()
+            .with_skill("alpha", "meta", &valid_fm("alpha"))
+            .with_body(
+                "alpha",
+                "| zot capability | realization | tier |\n\
+                 |---|---|---|\n\
+                 | blob store | armazem | SHIPPED primitive |\n",
+            );
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+        assert_eq!(report.errors_of(CheckKind::TierLedger).len(), 0);
+    }
+
+    /// RED: deleting the table is not a way to go green.
+    #[test]
+    fn a_required_ledger_that_is_absent_is_caught() {
+        let source = MockSource::new()
+            .with_skill("naturalize", "meta", &valid_fm("naturalize"))
+            .with_body("naturalize", "prose about the pipeline, and no ledger at all");
+        let config = CheckConfig {
+            require_tier_ledger: ["naturalize".to_owned()].into_iter().collect(),
+            ..CheckConfig::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        assert!(
+            report.errors_of(CheckKind::TierLedger).iter().any(|e| matches!(e,
+                LintError::LedgerMissing { skill, .. } if skill == "naturalize")),
+            "errors: {:?}", report.errors
+        );
+    }
+
+    /// GREEN: the requirement is satisfied by declaring one.
+    #[test]
+    fn a_required_ledger_that_is_present_passes() {
+        let source = MockSource::new()
+            .with_skill("naturalize", "meta", &valid_fm("naturalize"))
+            .with_body(
+                "naturalize",
+                "<!-- tier-ledger -->\n\n\
+                 | capability | realization | tier |\n\
+                 |---|---|---|\n\
+                 | the thing | the typed thing | parse-time-rejected |\n",
+            );
+        let config = CheckConfig {
+            require_tier_ledger: ["naturalize".to_owned()].into_iter().collect(),
+            ..CheckConfig::default()
+        };
+        let report = check_all(&source, &config).unwrap();
+        assert_eq!(report.errors_of(CheckKind::TierLedger).len(), 0);
     }
 
     #[test]

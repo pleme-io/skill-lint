@@ -96,6 +96,19 @@ enum Command {
         #[arg(long)]
         skip_path_resolution: bool,
 
+        /// A skill that MUST declare a `<!-- tier-ledger -->`. Repeat for each.
+        ///
+        /// Every declared ledger is validated unconditionally; this additionally
+        /// makes its ABSENCE a failure, so a skill whose doctrine promises a
+        /// tier-honest ledger cannot go green by deleting the table.
+        ///
+        /// There is no `--skip-skill-pointers` or `--skip-tier-ledger`: both
+        /// resolve against data that travels with the corpus, so neither can be
+        /// knowably-unavailable the way a sibling repo can. Living with a single
+        /// finding is a scoped `pending-skill-pointer:` line, not a flag.
+        #[arg(long = "require-tier-ledger")]
+        require_tier_ledger: Vec<String>,
+
         /// Flag skills not verified within this many days as stale.
         #[arg(long)]
         max_age_days: Option<u32>,
@@ -242,6 +255,7 @@ fn main() -> Result<()> {
             skip_frontmatter,
             skip_map_integrity,
             skip_path_resolution,
+            require_tier_ledger,
             map_dir,
             max_age_days,
             max_desc_chars,
@@ -256,6 +270,7 @@ fn main() -> Result<()> {
                 max_age_days,
                 today: None,
                 max_desc_chars,
+                require_tier_ledger: require_tier_ledger.into_iter().collect(),
             };
 
             let source = check::FsSource {
