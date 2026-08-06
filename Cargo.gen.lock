@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "61cab1e0c3efe0cf826e1798040827ddacddfe6203f1a37eec2e4a92aebcb598",
+  "cargo_lock_sha256": "4ac73fc26fc1c5a9a270146265a1f4fefbe020ba3df2f84ac3d5f06b4f5c78cd",
   "manifest_sha256": {
-    "Cargo.toml": "529607f3176b8253658c6a5c17df4672630ccbf9d57124b88589a98c5c6b66ee"
+    "Cargo.toml": "e9d38f74dcab806b4e81a2bad96261956eedecc6c2afcf6941bc459ca26e97aa"
   },
   "target_resolves": {
     "base": {
-      "aho-corasick-1.1.4": {
+      "aho-corasick-1.1.5": {
         "runtime_dependencies": [
           {
             "name": "memchr",
@@ -229,7 +229,7 @@
           },
           {
             "name": "regex_automata",
-            "package_key": "regex-automata-0.4.16",
+            "package_key": "regex-automata-0.4.18",
             "kind": "normal",
             "features": [
               "dfa-search"
@@ -817,7 +817,7 @@
         "runtime_dependencies": [
           {
             "name": "aho_corasick",
-            "package_key": "aho-corasick-1.1.4",
+            "package_key": "aho-corasick-1.1.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -837,7 +837,7 @@
           },
           {
             "name": "regex_automata",
-            "package_key": "regex-automata-0.4.16",
+            "package_key": "regex-automata-0.4.18",
             "kind": "normal",
             "features": [
               "alloc",
@@ -882,11 +882,11 @@
           "unicode-segment"
         ]
       },
-      "regex-automata-0.4.16": {
+      "regex-automata-0.4.18": {
         "runtime_dependencies": [
           {
             "name": "aho_corasick",
-            "package_key": "aho-corasick-1.1.4",
+            "package_key": "aho-corasick-1.1.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -1109,7 +1109,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "skill-lint-0.1.1": {
+      "skill-lint-0.1.2": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1991,7 +1991,7 @@
     }
   },
   "per_crate": {
-    "aho-corasick-1.1.4": {
+    "aho-corasick-1.1.5": {
       "edition": "2021"
     },
     "anstream-1.0.0": {
@@ -2128,7 +2128,7 @@
     "regex-1.13.1": {
       "edition": "2021"
     },
-    "regex-automata-0.4.16": {
+    "regex-automata-0.4.18": {
       "edition": "2021"
     },
     "regex-syntax-0.8.11": {
@@ -2156,7 +2156,7 @@
     "serde_yaml_ng-0.10.0": {
       "edition": "2021"
     },
-    "skill-lint-0.1.1": {
+    "skill-lint-0.1.2": {
       "edition": "2024",
       "lib_target": {
         "name": "skill_lint",
