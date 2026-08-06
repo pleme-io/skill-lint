@@ -628,7 +628,41 @@ mod tests {
             .with_raw_content("broken", "no delimiters here");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert!(report.errors.iter().any(|e| matches!(e,
-            LintError::MissingFrontmatter { field, .. } if field.contains("parse error"))));
+            LintError::UnparseableFrontmatter { .. })));
+    }
+
+    /// A colon inside an unquoted `description` is the real-world way this
+    /// fails: the value silently ends at the colon and YAML reads the rest as
+    /// a mapping. Reporting it as a missing field sends the reader hunting for
+    /// an absent key, so the parser's own cause must survive into the message.
+    #[test]
+    fn colon_in_unquoted_description_reports_cause_and_fix() {
+        let source = MockSource::new().with_skill(
+            "colon",
+            "meta",
+            "name: colon\ndescription: Owns two shapes: the standards page and the register",
+        );
+        let report = check_all(&source, &CheckConfig::default()).unwrap();
+
+        let err = report
+            .errors
+            .iter()
+            .find(|e| matches!(e, LintError::UnparseableFrontmatter { .. }))
+            .expect("a colon in an unquoted scalar must be reported as a parse failure");
+
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("not valid YAML"),
+            "must not be described as a missing field: {rendered}"
+        );
+        assert!(
+            rendered.contains("mapping values are not allowed"),
+            "the parser's own cause must survive: {rendered}"
+        );
+        assert!(
+            rendered.contains("'>-' folded block"),
+            "must name the fix: {rendered}"
+        );
     }
 
     #[test]

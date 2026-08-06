@@ -271,6 +271,20 @@ pub enum LintError {
         field: String,
     },
 
+    /// The frontmatter block exists but is not valid YAML.
+    ///
+    /// Distinct from `MissingFrontmatter` on purpose: reporting a parse failure
+    /// as a missing field named "frontmatter (parse error)" sends the reader
+    /// looking for an absent key instead of at the syntax, and drops the
+    /// parser's line/column entirely. The cause is carried verbatim.
+    #[error("[{kind}] skill '{skill}': frontmatter is not valid YAML — {cause}{hint}")]
+    UnparseableFrontmatter {
+        kind: CheckKind,
+        skill: String,
+        cause: String,
+        hint: String,
+    },
+
     #[error("[{kind}] skill '{skill}': name '{found}' does not match directory '{expected}'")]
     NameMismatch {
         kind: CheckKind,
@@ -380,6 +394,7 @@ impl LintError {
             | Self::MissingMapEntry { kind, .. }
             | Self::OrphanMapEntry { kind, .. }
             | Self::MissingFrontmatter { kind, .. }
+            | Self::UnparseableFrontmatter { kind, .. }
             | Self::NameMismatch { kind, .. }
             | Self::BrokenReference { kind, .. }
             | Self::LedgerMitigationUnbounded { kind, .. }

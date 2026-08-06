@@ -71,6 +71,24 @@ impl Checker for SyncChecker {
     }
 }
 
+/// Maps a YAML parser message onto the edit that fixes it, for the failure
+/// shapes that actually occur in SKILL.md frontmatter.
+///
+/// `description` is the field this bites: it is long, prose-like, routinely
+/// edited, and almost always an unquoted scalar — so adding a clause with a
+/// colon in it silently ends the value and YAML reads the rest as a mapping.
+fn frontmatter_parse_hint(cause: &str) -> String {
+    if cause.contains("mapping values are not allowed") {
+        ". An unquoted scalar contains ': ' — quote the value, or make it a '>-' folded block".into()
+    } else if cause.contains("did not find expected key")
+        || cause.contains("could not find expected ':'")
+    {
+        ". Check indentation under 'metadata:' — a continuation line must be indented past its key".into()
+    } else {
+        String::new()
+    }
+}
+
 /// Validates `SKILL.md` frontmatter: required fields, name/dir consistency.
 pub struct FrontmatterChecker;
 impl Checker for FrontmatterChecker {
@@ -81,13 +99,19 @@ impl Checker for FrontmatterChecker {
                 continue;
             };
 
-            let Ok(fm) = model::parse_frontmatter(content) else {
-                errors.push(LintError::MissingFrontmatter {
-                    kind: CheckKind::Frontmatter,
-                    skill: name.clone(),
-                    field: "frontmatter (parse error)".into(),
-                });
-                continue;
+            let fm = match model::parse_frontmatter(content) {
+                Ok(fm) => fm,
+                Err(e) => {
+                    let cause = e.to_string();
+                    let hint = frontmatter_parse_hint(&cause);
+                    errors.push(LintError::UnparseableFrontmatter {
+                        kind: CheckKind::Frontmatter,
+                        skill: name.clone(),
+                        cause,
+                        hint,
+                    });
+                    continue;
+                }
             };
 
             match &fm.name {
