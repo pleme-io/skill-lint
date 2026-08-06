@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "4ac73fc26fc1c5a9a270146265a1f4fefbe020ba3df2f84ac3d5f06b4f5c78cd",
+  "cargo_lock_sha256": "f518f8253141c300698110c8d9a61bf0734e668c1ebbc5b26dbf6519d2d2efbe",
   "manifest_sha256": {
-    "Cargo.toml": "e9d38f74dcab806b4e81a2bad96261956eedecc6c2afcf6941bc459ca26e97aa"
+    "Cargo.toml": "45fa74abe5e0969fef9f4a5175946877825fc5356c0606668ad6f4c24410233a"
   },
   "target_resolves": {
     "base": {
@@ -253,11 +253,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "clap-4.6.5": {
+      "clap-4.6.6": {
         "runtime_dependencies": [
           {
             "name": "clap_builder",
-            "package_key": "clap_builder-4.6.5",
+            "package_key": "clap_builder-4.6.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -288,7 +288,7 @@
           "usage"
         ]
       },
-      "clap_builder-4.6.5": {
+      "clap_builder-4.6.6": {
         "runtime_dependencies": [
           {
             "name": "anstream",
@@ -1109,7 +1109,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "skill-lint-0.1.2": {
+      "skill-lint-0.1.3": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1123,7 +1123,7 @@
           },
           {
             "name": "clap",
-            "package_key": "clap-4.6.5",
+            "package_key": "clap-4.6.6",
             "kind": "normal",
             "features": [
               "derive"
@@ -2032,7 +2032,7 @@
     "cfg-if-1.0.4": {
       "edition": "2018"
     },
-    "clap-4.6.5": {
+    "clap-4.6.6": {
       "edition": "2024",
       "binaries": [
         {
@@ -2041,7 +2041,7 @@
         }
       ]
     },
-    "clap_builder-4.6.5": {
+    "clap_builder-4.6.6": {
       "edition": "2024"
     },
     "clap_derive-4.6.4": {
@@ -2156,7 +2156,7 @@
     "serde_yaml_ng-0.10.0": {
       "edition": "2021"
     },
-    "skill-lint-0.1.2": {
+    "skill-lint-0.1.3": {
       "edition": "2024",
       "lib_target": {
         "name": "skill_lint",
