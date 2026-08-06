@@ -168,6 +168,46 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
+
+    /// Lint GitHub Actions workflows for inline shell — the no-shell seal.
+    ///
+    /// The fleet PRIME DIRECTIVE allows ~3 lines of inline glue and no more. The
+    /// shape that evades it is a block-form `run:`, because that does not look
+    /// like a shell script — it looks like YAML with a long string in it.
+    ///
+    /// Flow form (`run: cargo build`) is never a violation: a one-line
+    /// invocation of a typed tool is the target shape. Comments are not counted:
+    /// explaining WHY at the call site is house style and must not be taxed.
+    ///
+    /// Baseline-debt shaped, exactly like `claudemd`: known shell is recorded at
+    /// its measured line count, and only a NEW block or a baselined block that
+    /// GREW fails the run.
+    Workflows {
+        /// A workflow YAML to lint. Repeat for each file.
+        ///
+        /// Which files were scanned is an OUTPUT of every run, and a run over
+        /// zero files exits non-zero rather than reporting a vacuous pass.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+
+        /// Non-blank, non-comment lines a block-form `run:` may hold.
+        #[arg(long, default_value_t = skill_lint::workflows::DEFAULT_MAX_RUN_LINES)]
+        max_run_lines: usize,
+
+        /// Baseline of known debt. Without one, every existing violation fails.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Write the current violations to this path as a baseline, then exit 0.
+        /// This is what makes the gate adoptable on a corpus already in
+        /// violation; it is not a way to clear a finding you just caused.
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+
+        /// Show this many longest steps.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -393,7 +433,111 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+
+        Command::Workflows { files, max_run_lines, baseline, write_baseline, top } => {
+            run_workflows(&files, max_run_lines, baseline.as_deref(), write_baseline.as_deref(), top)
+        }
     }
+}
+
+/// The `workflows` subcommand.
+///
+/// Its own function rather than a fourth arm inline: `main`'s match already trips
+/// `clippy::too_many_lines` at 199 lines, and a subcommand that pushed it to 281
+/// would be adding to debt it did not create.
+fn run_workflows(
+    files: &[PathBuf],
+    max_run_lines: usize,
+    baseline: Option<&std::path::Path>,
+    write_baseline: Option<&std::path::Path>,
+    top: usize,
+) -> Result<()> {
+    use skill_lint::workflows::{Baseline, FsWorkflowSource, WorkflowConfig};
+
+    let config = WorkflowConfig { max_run_lines };
+    let known = match baseline {
+        Some(path) => Baseline::load(path)?,
+        None => Baseline::default(),
+    };
+
+    let source = FsWorkflowSource { paths: files };
+    let report =
+        skill_lint::workflows::lint_all(&source, &config, known).context("linting workflows")?;
+
+    // Coverage before verdict, for the same reason claudemd does it: a green run
+    // over the wrong file set should be visible, not merely green.
+    println!("scanned {} workflow(s):", report.scans.len());
+    for scan in &report.scans {
+        let over = scan.runs.iter().filter(|r| r.shell_lines > config.max_run_lines).count();
+        println!(
+            "  {:<44} {:>3} block run(s), {:>3} over  |  {:>3} flow run(s)",
+            scan.key,
+            scan.runs.len(),
+            over,
+            scan.flow_runs
+        );
+    }
+
+    println!(
+        "\nblock-form run: steps {:>5}   ({} over the {}-line glue allowance)",
+        report.block_runs(),
+        report.over_limit(),
+        config.max_run_lines
+    );
+    println!(
+        "flow-form run: steps  {:>5}   (the target shape — never a finding)",
+        report.flow_runs()
+    );
+    println!(
+        "inline shell lines    {:>5}   (comments and blanks excluded)",
+        report.total_shell_lines()
+    );
+
+    let longest = report.runs_by_size();
+    if !longest.is_empty() {
+        println!("\nlongest {top}:");
+        for run in longest.iter().take(top) {
+            let over = run.shell_lines.saturating_sub(config.max_run_lines);
+            println!(
+                "  {:>4} lines  (+{:>4})  {}{}  {}:{}",
+                run.shell_lines,
+                over,
+                run.style,
+                if run.body_lines > run.shell_lines { "*" } else { " " },
+                run.key,
+                run.line
+            );
+        }
+        println!("  (`*` marks a step whose body also carries comments, which are not counted)");
+    }
+
+    if let Some(path) = write_baseline {
+        let text = Baseline::render(&report.scans, &config);
+        std::fs::write(path, &text)
+            .with_context(|| format!("writing baseline {}", path.display()))?;
+        println!(
+            "\nwrote baseline {} ({} recorded step(s))",
+            path.display(),
+            text.lines().filter(|l| !l.starts_with('#')).count()
+        );
+        return Ok(());
+    }
+
+    if report.is_ok() {
+        eprintln!(
+            "skill-lint workflows: all checks passed ({} workflow(s), {} block run(s))",
+            report.scans.len(),
+            report.block_runs()
+        );
+    } else {
+        eprintln!("\nskill-lint workflows: {} error(s):", report.errors.len());
+        for err in &report.errors {
+            eprintln!("  - {err}");
+        }
+        process::exit(1);
+    }
+
+    Ok(())
 }
 
 /// Render the busiest few names of a census bucket, largest first.

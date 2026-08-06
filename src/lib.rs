@@ -3,6 +3,8 @@ pub mod check;
 pub mod claudemd;
 pub mod error;
 pub mod model;
+pub mod ratchet;
+pub mod workflows;
 
 // Re-export key types for downstream consumers
 pub use check::{CheckConfig, CheckContext, Checker, FsSource, Report, SkillSource};

@@ -70,6 +70,16 @@ pub enum CheckKind {
     /// The file is loaded into every session before the first token of work, so
     /// its size is a standing tax on every task in the repository.
     ClaudeMdFile,
+    /// Inline shell in a GitHub Actions `run:` block.
+    ///
+    /// The fleet PRIME DIRECTIVE allows ~3 lines of inline glue and no more. The
+    /// shape that evades it is not a `.sh` file — it is a block-form `run:`,
+    /// because that does not look like a shell script, it looks like YAML with a
+    /// long string in it. Measured 2026-08-06: an agent wrote a ~15-line `run:`
+    /// (embedded `nix eval`, `grep -qx`, if/else) into substrate's
+    /// `rust-auto-release.yml` DURING the session it spent enforcing that rule.
+    /// The rule was stated in two places and still lost — unenforced, not weak.
+    WorkflowRun,
 }
 
 impl fmt::Display for CheckKind {
@@ -88,6 +98,7 @@ impl fmt::Display for CheckKind {
             Self::TierLedger => write!(f, "tier-ledger"),
             Self::ClaudeMdEntry => write!(f, "claudemd-entry"),
             Self::ClaudeMdFile => write!(f, "claudemd-file"),
+            Self::WorkflowRun => write!(f, "workflow-run"),
         }
     }
 }
@@ -134,6 +145,7 @@ impl FromStr for CheckKind {
             "tier-ledger" => Ok(Self::TierLedger),
             "claudemd-entry" => Ok(Self::ClaudeMdEntry),
             "claudemd-file" => Ok(Self::ClaudeMdFile),
+            "workflow-run" => Ok(Self::WorkflowRun),
             _ => Err(ParseCheckKindError(s.to_owned())),
         }
     }
@@ -197,6 +209,34 @@ pub enum LintError {
         kind: CheckKind,
         file: String,
         bytes: usize,
+        recorded: usize,
+        grew: usize,
+    },
+
+    /// The workflow sibling of [`Self::NoDocsScanned`]. Same rule, and it earns
+    /// its own variant rather than a shared one because the remedy differs: the
+    /// operator needs to be told the flag AND that a directory is not a file.
+    #[error("[{kind}] no workflow files were scanned (asked for: {searched}) — a run that lints zero workflows is a vacuous pass, not a success. Pass --file <PATH> once per workflow (e.g. --file .github/workflows/ci.yml); a directory is not a file.")]
+    NoWorkflowsScanned { kind: CheckKind, searched: String },
+
+    #[error("[{kind}] {file}:{line} step '{step}' runs {lines} lines of inline shell, over the {cap}-line glue allowance by {over}. Inline shell in a `run:` block does not look like a shell script — it looks like YAML with a long string in it, which is exactly why this class keeps landing. Move the logic into a typed tool (a `.tlisp` under tools/ run by pleme-io/actions/tatara-script, or a `nix run .#app`) and leave a one-line invocation here. Comments are not counted, so the WHY can stay. If this is known debt, record it with --write-baseline.")]
+    InlineShellTooLong {
+        kind: CheckKind,
+        file: String,
+        step: String,
+        line: usize,
+        lines: usize,
+        cap: usize,
+        over: usize,
+    },
+
+    #[error("[{kind}] {file}:{line} step '{step}' grew to {lines} lines of inline shell from the {recorded} recorded in the baseline (+{grew}). Baselined shell may shrink or hold, never grow — that is the whole point of the baseline. Put the new logic in a typed tool instead of on the end of this block, or re-record deliberately with --write-baseline.")]
+    InlineShellGrew {
+        kind: CheckKind,
+        file: String,
+        step: String,
+        line: usize,
+        lines: usize,
         recorded: usize,
         grew: usize,
     },
@@ -334,6 +374,9 @@ impl LintError {
             | Self::IndexEntryGrew { kind, .. }
             | Self::DocTooLarge { kind, .. }
             | Self::DocGrew { kind, .. }
+            | Self::NoWorkflowsScanned { kind, .. }
+            | Self::InlineShellTooLong { kind, .. }
+            | Self::InlineShellGrew { kind, .. }
             | Self::MissingMapEntry { kind, .. }
             | Self::OrphanMapEntry { kind, .. }
             | Self::MissingFrontmatter { kind, .. }
@@ -376,6 +419,7 @@ mod tests {
         assert_eq!(CheckKind::TierLedger.to_string(), "tier-ledger");
         assert_eq!(CheckKind::ClaudeMdEntry.to_string(), "claudemd-entry");
         assert_eq!(CheckKind::ClaudeMdFile.to_string(), "claudemd-file");
+        assert_eq!(CheckKind::WorkflowRun.to_string(), "workflow-run");
     }
 
     /// The message has to carry the measurement AND the move that fixes it.
@@ -438,6 +482,59 @@ mod tests {
         assert!(msg.contains("<no files given>"), "{msg}");
     }
 
+    /// The message has to name the SHAPE that hid the defect and the move that
+    /// fixes it. "Too much shell" without "this looks like YAML, not a script"
+    /// leaves the reader with the same blind spot that let it land.
+    #[test]
+    fn inline_shell_message_names_the_shape_and_the_move() {
+        let err = LintError::InlineShellTooLong {
+            kind: CheckKind::WorkflowRun,
+            file: "rust-auto-release.yml".into(),
+            step: "Resolve test environment".into(),
+            line: 321,
+            lines: 15,
+            cap: 3,
+            over: 12,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("[workflow-run]"), "kind tag missing: {msg}");
+        assert!(msg.contains("rust-auto-release.yml:321"), "location missing: {msg}");
+        assert!(msg.contains("Resolve test environment"), "step missing: {msg}");
+        assert!(msg.contains("15 lines") && msg.contains("3-line"), "sizes missing: {msg}");
+        assert!(msg.contains("YAML with a long string"), "the shape is not named: {msg}");
+        assert!(msg.contains("tatara-script"), "the remedy is not named: {msg}");
+        assert!(msg.contains("--write-baseline"), "escape hatch missing: {msg}");
+    }
+
+    #[test]
+    fn inline_shell_growth_names_the_baseline_it_exceeded() {
+        let err = LintError::InlineShellGrew {
+            kind: CheckKind::WorkflowRun,
+            file: "image-push.yml".into(),
+            step: "Build and push".into(),
+            line: 60,
+            lines: 64,
+            recorded: 60,
+            grew: 4,
+        };
+        assert!(err.to_string().contains("grew to 64 lines"), "{err}");
+        assert!(err.to_string().contains("from the 60 recorded"), "{err}");
+    }
+
+    /// A vacuous workflow run must say what it looked for, and must not silently
+    /// accept a directory where a file was wanted.
+    #[test]
+    fn no_workflows_scanned_names_what_was_searched() {
+        let err = LintError::NoWorkflowsScanned {
+            kind: CheckKind::Discovery,
+            searched: "<no files given>".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("vacuous pass"), "{msg}");
+        assert!(msg.contains("<no files given>"), "{msg}");
+        assert!(msg.contains("a directory is not a file"), "{msg}");
+    }
+
     #[test]
     fn path_form_display() {
         assert_eq!(PathForm::RelativeLink.to_string(), "relative link");
@@ -495,6 +592,9 @@ mod tests {
             (LintError::IndexEntryGrew { kind: CheckKind::ClaudeMdEntry, file: "f".into(), entry: "e".into(), line: 1, bytes: 2, recorded: 1, grew: 1 }, CheckKind::ClaudeMdEntry),
             (LintError::DocTooLarge { kind: CheckKind::ClaudeMdFile, file: "f".into(), bytes: 2, cap: 1, over: 1 }, CheckKind::ClaudeMdFile),
             (LintError::DocGrew { kind: CheckKind::ClaudeMdFile, file: "f".into(), bytes: 2, recorded: 1, grew: 1 }, CheckKind::ClaudeMdFile),
+            (LintError::NoWorkflowsScanned { kind: CheckKind::Discovery, searched: "x".into() }, CheckKind::Discovery),
+            (LintError::InlineShellTooLong { kind: CheckKind::WorkflowRun, file: "f".into(), step: "s".into(), line: 1, lines: 4, cap: 3, over: 1 }, CheckKind::WorkflowRun),
+            (LintError::InlineShellGrew { kind: CheckKind::WorkflowRun, file: "f".into(), step: "s".into(), line: 1, lines: 5, recorded: 4, grew: 1 }, CheckKind::WorkflowRun),
         ];
         for (err, expected_kind) in cases {
             assert_eq!(err.kind(), expected_kind, "wrong kind for {err}");
@@ -565,6 +665,7 @@ mod tests {
             CheckKind::TierLedger,
             CheckKind::ClaudeMdEntry,
             CheckKind::ClaudeMdFile,
+            CheckKind::WorkflowRun,
         ];
         for kind in kinds {
             let s = kind.to_string();

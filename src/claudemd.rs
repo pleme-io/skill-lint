@@ -64,6 +64,7 @@ use anyhow::Context as _;
 
 use crate::budget::fold;
 use crate::error::{CheckKind, LintError};
+use crate::ratchet::{Ratchet, Verdict, parse_lines};
 
 /// Per-entry ceiling. An index entry is a pointer — rule, skill, doc — and 400
 /// bytes is room for all three plus a sentence of orientation.
@@ -471,40 +472,32 @@ fn count_standalone(line: &str, token: &str) -> usize {
 /// Known debt: what was already over ceiling, and how big it was then.
 ///
 /// A ratchet rather than an allowlist — the recorded size is a ceiling of its
-/// own, so a baselined entry may shrink or hold but never grow.
+/// own, so a baselined entry may shrink or hold but never grow. The mechanism
+/// itself lives in [`crate::ratchet`], shared with the `workflows` gate: a
+/// ratchet re-implemented per gate is a ratchet that drifts per gate, and the
+/// looser copy is the one nobody notices.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Baseline {
     /// Entry key → size when recorded.
-    pub entries: BTreeMap<String, usize>,
+    pub entries: Ratchet,
     /// Document key → size when recorded.
-    pub files: BTreeMap<String, usize>,
+    pub files: Ratchet,
 }
 
 impl Baseline {
     /// Parse a baseline file.
     ///
-    /// Lines are `entry: <key> <bytes>` or `file: <key> <bytes>`. The size is
-    /// the LAST whitespace-separated token, because a key contains spaces.
-    /// Blank lines and lines starting with `#` are ignored; anything else
-    /// unparseable is ignored too — a malformed baseline must not be able to
-    /// weaken the gate by accident, and an unrecognized line simply covers
-    /// nothing.
+    /// Lines are `entry: <key> <bytes>` or `file: <key> <bytes>`; the grammar is
+    /// [`crate::ratchet::parse_lines`]'s.
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let mut baseline = Self::default();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+        for (kind, key, size) in parse_lines(text) {
+            match kind.as_str() {
+                "entry" => baseline.entries.insert(key, size),
+                "file" => baseline.files.insert(key, size),
+                _ => {}
             }
-            let Some((kind, rest)) = line.split_once(':') else { continue };
-            let Some((key, size)) = rest.trim().rsplit_once(char::is_whitespace) else { continue };
-            let Ok(size) = size.trim().parse::<usize>() else { continue };
-            match kind.trim() {
-                "entry" => baseline.entries.insert(key.trim().to_owned(), size),
-                "file" => baseline.files.insert(key.trim().to_owned(), size),
-                _ => continue,
-            };
         }
         baseline
     }
@@ -630,8 +623,8 @@ impl DocChecker for EntryBudgetChecker {
                 if entry.bytes <= self.cap {
                     continue;
                 }
-                match ctx.baseline.entries.get(&entry.key) {
-                    None => errors.push(LintError::IndexEntryTooLong {
+                match ctx.baseline.entries.judge(&entry.key, entry.bytes) {
+                    Verdict::Unrecorded => errors.push(LintError::IndexEntryTooLong {
                         kind: CheckKind::ClaudeMdEntry,
                         file: scan.key.clone(),
                         entry: entry.title.clone(),
@@ -640,7 +633,7 @@ impl DocChecker for EntryBudgetChecker {
                         cap: self.cap,
                         over: entry.bytes - self.cap,
                     }),
-                    Some(&recorded) if entry.bytes > recorded => {
+                    Verdict::Grew { recorded, grew } => {
                         errors.push(LintError::IndexEntryGrew {
                             kind: CheckKind::ClaudeMdEntry,
                             file: scan.key.clone(),
@@ -648,10 +641,10 @@ impl DocChecker for EntryBudgetChecker {
                             line: entry.line,
                             bytes: entry.bytes,
                             recorded,
-                            grew: entry.bytes - recorded,
+                            grew,
                         });
                     }
-                    Some(_) => {}
+                    Verdict::Held => {}
                 }
             }
         }
@@ -672,22 +665,22 @@ impl DocChecker for FileBudgetChecker {
             if scan.bytes <= self.cap {
                 continue;
             }
-            match ctx.baseline.files.get(&scan.key) {
-                None => errors.push(LintError::DocTooLarge {
+            match ctx.baseline.files.judge(&scan.key, scan.bytes) {
+                Verdict::Unrecorded => errors.push(LintError::DocTooLarge {
                     kind: CheckKind::ClaudeMdFile,
                     file: scan.key.clone(),
                     bytes: scan.bytes,
                     cap: self.cap,
                     over: scan.bytes - self.cap,
                 }),
-                Some(&recorded) if scan.bytes > recorded => errors.push(LintError::DocGrew {
+                Verdict::Grew { recorded, grew } => errors.push(LintError::DocGrew {
                     kind: CheckKind::ClaudeMdFile,
                     file: scan.key.clone(),
                     bytes: scan.bytes,
                     recorded,
-                    grew: scan.bytes - recorded,
+                    grew,
                 }),
-                Some(_) => {}
+                Verdict::Held => {}
             }
         }
     }
@@ -1082,8 +1075,8 @@ mod tests {
         let b = Baseline::parse(
             "# comment\n\nentry: docs/CLAUDE.md::The Tendril Method 4139\nfile: docs/CLAUDE.md 282648\nnonsense\n",
         );
-        assert_eq!(b.entries.get("docs/CLAUDE.md::The Tendril Method"), Some(&4139));
-        assert_eq!(b.files.get("docs/CLAUDE.md"), Some(&282_648));
+        assert_eq!(b.entries.recorded("docs/CLAUDE.md::The Tendril Method"), Some(4139));
+        assert_eq!(b.files.recorded("docs/CLAUDE.md"), Some(282_648));
         assert_eq!(b.entries.len(), 1);
     }
 

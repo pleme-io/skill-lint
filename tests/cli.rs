@@ -615,3 +615,226 @@ fn claudemd_round_trips_on_the_real_org_file() {
         .success()
         .stderr(predicate::str::contains("all checks passed"));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// workflows — the no-shell seal at the shape that hides
+// ═══════════════════════════════════════════════════════════════════
+
+/// Write a minimal workflow whose single job holds the given step lines.
+fn workflow(dir: &std::path::Path, name: &str, steps: &[&str]) -> std::path::PathBuf {
+    let path = dir.join(name);
+    let mut lines: Vec<&str> =
+        vec!["name: CI", "on:", "  push:", "", "jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps:"];
+    lines.extend_from_slice(steps);
+    fs::write(&path, lines.join("\n") + "\n").unwrap();
+    path
+}
+
+/// RED, at the CLI. The defect this subcommand exists for: a long `run:` block
+/// that reads as YAML rather than as a shell script.
+#[test]
+fn workflows_fails_on_a_long_inline_run() {
+    let dir = TempDir::new().unwrap();
+    let file = workflow(dir.path(), "rust-auto-release.yml", &[
+        "      - name: Resolve test environment",
+        "        run: |",
+        "          shells=$(nix eval --impure --json --expr 'x')",
+        "          if echo \"$shells\" | grep -qx '\"default\"'; then",
+        "            echo 'installable=.#default' >> \"$GITHUB_OUTPUT\"",
+        "          else",
+        "            echo 'installable=github:pleme-io/substrate#release-gate' >> \"$GITHUB_OUTPUT\"",
+        "          fi",
+    ]);
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["workflows", "--file", file.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[workflow-run]"))
+        .stderr(predicate::str::contains("'Resolve test environment'"))
+        .stderr(predicate::str::contains("over the 3-line glue allowance"))
+        .stderr(predicate::str::contains("--write-baseline"));
+}
+
+/// GREEN. `uses:` steps plus one-line invocations — the target shape — must pass,
+/// and a comment-heavy step must pass with them.
+#[test]
+fn workflows_passes_on_uses_plus_one_line_glue() {
+    let dir = TempDir::new().unwrap();
+    let file = workflow(dir.path(), "ci.yml", &[
+        "      - uses: actions/checkout@v4",
+        "      - uses: pleme-io/actions/tatara-script@main",
+        "        with:",
+        "          script: tools/release.tlisp",
+        "      - name: Glue",
+        "        run: cargo build --workspace --all-targets",
+        "      - name: Documented glue",
+        "        run: |",
+        "          # Measured 2026-08-06: comments are not taxed, so the WHY",
+        "          # can live at the call site where it is read.",
+        "          # Five lines of rationale, one line of shell.",
+        "          # Four.",
+        "          # Five.",
+        "          nix run .#gate",
+    ]);
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["workflows", "--file", file.to_str().unwrap()])
+        .assert()
+        .success()
+        // One flow-form step (`Glue`) and one block-form step (`Documented
+        // glue`), whose five comment lines leave it measuring a single line of
+        // shell. Both numbers are asserted because a green run whose counts are
+        // wrong is still a green run.
+        .stdout(predicate::str::contains("block-form run: steps     1   (0 over"))
+        .stdout(predicate::str::contains("flow-form run: steps      1"))
+        .stdout(predicate::str::contains("inline shell lines        1"))
+        .stderr(predicate::str::contains("all checks passed"));
+}
+
+/// The coverage half of the gate, matching `claudemd` exactly.
+#[test]
+fn workflows_fails_when_no_files_are_given() {
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["workflows"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("vacuous pass"))
+        .stderr(predicate::str::contains("a directory is not a file"));
+}
+
+#[test]
+fn workflows_fails_on_a_file_that_is_not_there() {
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["workflows", "--file", "/nonexistent/ci.yml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reading /nonexistent/ci.yml"));
+}
+
+/// The whole ratchet, end to end at the CLI: record the debt, go green, then
+/// grow the block by one line and go red again.
+#[test]
+fn workflows_baseline_absolves_recorded_debt_and_catches_growth() {
+    let dir = TempDir::new().unwrap();
+    let baseline = dir.path().join("baseline.txt");
+    let steps: Vec<String> = std::iter::once("      - name: Fat".to_owned())
+        .chain(std::iter::once("        run: |".to_owned()))
+        .chain((0..8).map(|n| format!("          echo line-{n}")))
+        .collect();
+    let refs: Vec<&str> = steps.iter().map(String::as_str).collect();
+    let file = workflow(dir.path(), "ci.yml", &refs);
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args([
+            "workflows",
+            "--file",
+            file.to_str().unwrap(),
+            "--write-baseline",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 recorded step(s)"));
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["workflows", "--file", file.to_str().unwrap(), "--baseline", baseline.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("all checks passed"));
+
+    // Grow it. Baselined shell may shrink or hold, never grow.
+    let grown: Vec<String> = std::iter::once("      - name: Fat".to_owned())
+        .chain(std::iter::once("        run: |".to_owned()))
+        .chain((0..9).map(|n| format!("          echo line-{n}")))
+        .collect();
+    let grown_refs: Vec<&str> = grown.iter().map(String::as_str).collect();
+    workflow(dir.path(), "ci.yml", &grown_refs);
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["workflows", "--file", file.to_str().unwrap(), "--baseline", baseline.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("grew to 9 lines"))
+        .stderr(predicate::str::contains("from the 8 recorded"));
+}
+
+/// Run the seal against substrate's real workflow corpus and prove the baseline
+/// round-trip on real data. Like the `claudemd` sibling it does NOT assert an
+/// exit code on the unbaselined run — that corpus lives in another repository and
+/// its debt moves under this crate's feet. What it asserts is the property that
+/// stays true either way: the scan finds real block-form steps, at least one is
+/// over the limit, and a baseline written from that scan makes the same scan pass.
+///
+/// Measured 2026-08-06 across substrate's 89 workflow files: 120 block-form
+/// `run:` steps, 82 over 3 non-comment lines, 1,071 total lines of inline shell;
+/// largest were image-push.yml 60, go-binary-release.yml 56,
+/// rust-binary-release.yml 48. Those figures are a dated snapshot, so the
+/// assertions below are floors rather than equalities.
+#[test]
+fn workflows_round_trips_on_substrates_real_corpus() {
+    let default = format!(
+        "{}/code/github/pleme-io/substrate/.github/workflows",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    let root =
+        std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_WORKFLOWS").unwrap_or(default));
+
+    if !root.is_dir() {
+        // Announced, not silent — a skip must never be able to hide as a pass.
+        eprintln!(
+            "SKIP workflows_round_trips_on_substrates_real_corpus: no fixture at {} \
+             (set SKILL_LINT_REAL_WORKFLOWS)",
+            root.display()
+        );
+        return;
+    }
+
+    let mut files: Vec<String> = fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let ext = path.extension()?.to_str()?.to_owned();
+            (ext == "yml" || ext == "yaml").then(|| path.to_string_lossy().into_owned())
+        })
+        .collect();
+    files.sort();
+    assert!(files.len() > 20, "expected a real corpus, found {} file(s)", files.len());
+
+    let dir = TempDir::new().unwrap();
+    let baseline = dir.path().join("baseline.txt");
+
+    let mut args: Vec<String> = vec!["workflows".to_owned()];
+    for file in &files {
+        args.push("--file".to_owned());
+        args.push(file.clone());
+    }
+    let mut record = args.clone();
+    record.push("--write-baseline".to_owned());
+    record.push(baseline.to_string_lossy().into_owned());
+
+    let out = Command::cargo_bin("skill-lint").unwrap().args(&record).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    eprintln!("REAL substrate workflows run:\n{stdout}");
+    assert!(!stdout.contains("block-form run: steps       0"), "measured zero blocks:\n{stdout}");
+    let recorded = fs::read_to_string(&baseline).unwrap();
+    let rows = recorded.lines().filter(|l| !l.starts_with('#')).count();
+    assert!(rows > 20, "expected real inline-shell debt, recorded {rows} row(s):\n{stdout}");
+
+    let mut verify = args;
+    verify.push("--baseline".to_owned());
+    verify.push(baseline.to_string_lossy().into_owned());
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(&verify)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("all checks passed"));
+}
