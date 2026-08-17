@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "f518f8253141c300698110c8d9a61bf0734e668c1ebbc5b26dbf6519d2d2efbe",
+  "cargo_lock_sha256": "33c06cbbf303162ca6dea3f8821a0d352079334b7fbcc1dfa16bbef032618ad5",
   "manifest_sha256": {
-    "Cargo.toml": "45fa74abe5e0969fef9f4a5175946877825fc5356c0606668ad6f4c24410233a"
+    "Cargo.toml": "54ffd377a2f80fb153be264dfe8465b2f824520f0da95f27d1e2833e1a0f0cd6"
   },
   "target_resolves": {
     "base": {
@@ -149,7 +149,7 @@
           },
           {
             "name": "bstr",
-            "package_key": "bstr-1.13.0",
+            "package_key": "bstr-1.13.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -215,7 +215,7 @@
           "std"
         ]
       },
-      "bstr-1.13.0": {
+      "bstr-1.13.1": {
         "runtime_dependencies": [
           {
             "name": "memchr",
@@ -1109,7 +1109,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "skill-lint-0.1.3": {
+      "skill-lint-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1157,7 +1157,7 @@
           },
           {
             "name": "thiserror",
-            "package_key": "thiserror-2.0.19",
+            "package_key": "thiserror-2.0.20",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1276,11 +1276,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "thiserror-2.0.19": {
+      "thiserror-2.0.20": {
         "runtime_dependencies": [
           {
             "name": "thiserror_impl",
-            "package_key": "thiserror-impl-2.0.19",
+            "package_key": "thiserror-impl-2.0.20",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1295,7 +1295,7 @@
           "std"
         ]
       },
-      "thiserror-impl-2.0.19": {
+      "thiserror-impl-2.0.20": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -2026,7 +2026,7 @@
     "bitflags-2.13.1": {
       "edition": "2021"
     },
-    "bstr-1.13.0": {
+    "bstr-1.13.1": {
       "edition": "2021"
     },
     "cfg-if-1.0.4": {
@@ -2156,7 +2156,7 @@
     "serde_yaml_ng-0.10.0": {
       "edition": "2021"
     },
-    "skill-lint-0.1.3": {
+    "skill-lint-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "skill_lint",
@@ -2181,11 +2181,11 @@
     "termtree-0.5.1": {
       "edition": "2021"
     },
-    "thiserror-2.0.19": {
+    "thiserror-2.0.20": {
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "thiserror-impl-2.0.19": {
+    "thiserror-impl-2.0.20": {
       "edition": "2021",
       "proc_macro": true
     },
