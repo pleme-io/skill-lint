@@ -59,8 +59,10 @@
 //! * **In prose, the `/` must follow a real boundary** — whitespace, or one of
 //!   `([*,;·—→`. This is what rejects the alternation form `` `X`/y-z `` ("X or
 //!   y-z", written 4× in this corpus as `` `ReplicaBand`/lifecycle-breath ``,
-//!   `` `camelot-builder`/crunkrun-managed ``, `` `db_pwd`/uam-shared-key ``,
-//!   `[[carve]]/enjulho-composed`) and `http://host:8090/org-root`.
+//!   `` `builder-pool`/runtime-managed ``, `` `db_pass`/service-shared-key ``,
+//!   `[[carve]]/enjulho-composed`) and `http://host:8090/org-root`. Two of the
+//!   four are shown with neutral identifiers — what was measured, and what the
+//!   fixtures reproduce byte-for-byte, is the SHAPE, not the words.
 //!
 //! Fenced blocks are out of scope for the same reason they are in `links`: a
 //! fence is where a skill *demonstrates* a command, not where it issues one.
@@ -362,11 +364,18 @@ mod tests {
     ///
     /// Four live instances in this corpus, every one of them a false positive
     /// under a naive matcher.
+    ///
+    /// Two carry neutral identifiers rather than the corpus's own words. The
+    /// measured thing is the SHAPE — a backtick or a bare letter immediately
+    /// before the `/`, then a hyphenated compound — and every shape below is
+    /// reproduced exactly, including the letter-before-slash case (`KEK/`) that
+    /// the backtick case would otherwise hide. Do not expect to grep the corpus
+    /// for these literals and find them.
     #[test]
     fn the_alternation_form_is_not_a_pointer() {
         assert!(refs("breathe's `ReplicaBand`/lifecycle-breath").is_empty());
-        assert!(refs("Akeyless's own `camelot-builder`/crunkrun-managed scale set").is_empty());
-        assert!(refs("`Secret` for DEK/`db_pwd`/uam-shared-key, the MySQL").is_empty());
+        assert!(refs("a vendor's own `builder-pool`/runtime-managed scale set").is_empty());
+        assert!(refs("`Secret` for KEK/`db_pass`/service-shared-key, the MySQL").is_empty());
         assert!(refs("Helm-deployed (or [[carve]]/enjulho-composed, whichever").is_empty());
     }
 
