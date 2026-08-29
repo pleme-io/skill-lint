@@ -130,11 +130,11 @@ mod tests {
     #[test]
     fn parse_keeps_keys_containing_spaces() {
         let rows = parse_lines(
-            "# comment\n\nentry: docs/CLAUDE.md::The Tendril Method 4139\n\
+            "# comment\n\nentry: docs/CLAUDE.md::The Urdume Method 4139\n\
              run: wf/image-push.yml::push/Build and push 60\nnonsense\nbad: key notanumber\n",
         );
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], ("entry".to_owned(), "docs/CLAUDE.md::The Tendril Method".to_owned(), 4139));
+        assert_eq!(rows[0], ("entry".to_owned(), "docs/CLAUDE.md::The Urdume Method".to_owned(), 4139));
         assert_eq!(rows[1], ("run".to_owned(), "wf/image-push.yml::push/Build and push".to_owned(), 60));
     }
 }

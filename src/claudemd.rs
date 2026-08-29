@@ -838,7 +838,7 @@ mod tests {
     /// an 8,434 B entry that never existed.
     #[test]
     fn a_star_prefixed_bullet_is_its_own_entry() {
-        assert!(is_entry_bullet("- ★★ The Tendril Method — canonical doctrine."));
+        assert!(is_entry_bullet("- ★★ The Urdume Method — canonical doctrine."));
         assert!(is_entry_bullet("- ★ Cache-leverage — the precomputed path."));
         assert!(is_entry_bullet("- **★★ Bold entry — a doctrine.**"));
         assert!(!is_entry_bullet("- plain bullet"));
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn titles_cut_at_the_name_gloss_boundary() {
         assert_eq!(title_of("- **★★ OPERATING-THEORY — the six-axis…**"), "OPERATING-THEORY");
-        assert_eq!(title_of("- ★★ The Tendril Method — canonical doctrine"), "The Tendril Method");
+        assert_eq!(title_of("- ★★ The Urdume Method — canonical doctrine"), "The Urdume Method");
         assert_eq!(title_of("- **★★ Shigoto for every work graph.** Any tool…"), "Shigoto for every work graph");
         assert_eq!(title_of("- **★ Cache-leverage — the precomputed path.**"), "Cache-leverage");
     }
@@ -1073,9 +1073,9 @@ mod tests {
     #[test]
     fn baseline_parses_keys_containing_spaces() {
         let b = Baseline::parse(
-            "# comment\n\nentry: docs/CLAUDE.md::The Tendril Method 4139\nfile: docs/CLAUDE.md 282648\nnonsense\n",
+            "# comment\n\nentry: docs/CLAUDE.md::The Urdume Method 4139\nfile: docs/CLAUDE.md 282648\nnonsense\n",
         );
-        assert_eq!(b.entries.recorded("docs/CLAUDE.md::The Tendril Method"), Some(4139));
+        assert_eq!(b.entries.recorded("docs/CLAUDE.md::The Urdume Method"), Some(4139));
         assert_eq!(b.files.recorded("docs/CLAUDE.md"), Some(282_648));
         assert_eq!(b.entries.len(), 1);
     }
