@@ -1,0 +1,17 @@
+{
+  "numStartups": 3,
+  "mcpServers": {
+    "alpha-srv": {"type": "stdio", "command": "/bin/alpha", "args": [], "env": {"API_KEY": "not-read"}},
+    "beta-srv": {"type": "stdio", "command": "/bin/beta"},
+    "gamma-srv": {"type": "stdio", "command": "/bin/gamma"},
+    "delta-srv": {"type": "http", "url": "http://127.0.0.1:9/mcp"},
+    "epsilon-srv": {"type": "stdio", "command": "/bin/epsilon"},
+    "dotted.srv": {"type": "stdio", "command": "/bin/dotted"}
+  },
+  "_retiredMcpServers": {
+    "retired-srv": {"type": "stdio", "command": "/bin/retired"}
+  },
+  "projects": {
+    "/home/u/repo": {"mcpServers": {"local-srv": {"type": "stdio", "command": "/bin/local"}}}
+  }
+}

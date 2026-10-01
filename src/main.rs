@@ -293,6 +293,41 @@ enum UsageAction {
     /// Counts per skill, deployed skills unused in the window, and the drop
     /// order the listing budget implies (least used first).
     Report(UsageReportArgs),
+
+    #[command(
+        about = "Per MCP server: calls, distinct tools used and last use in the window, then configured servers \
+                 unused in it, most tool names first"
+    )]
+    McpReport(McpReportArgs),
+}
+
+#[derive(clap::Args)]
+struct McpReportArgs {
+    #[arg(long, default_value = skill_lint::usage::DEFAULT_SINCE, help = "Window: <N>h, <N>d, <N>w, or all")]
+    since: String,
+
+    #[arg(long, help = "The log. Same default as `record`")]
+    log: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "A file with a top-level mcpServers map; repeat to union several. Defaults to $HOME/.claude.json, \
+                the user scope every session loads"
+    )]
+    config: Vec<PathBuf>,
+
+    #[arg(
+        long,
+        help = "A file listing tool names (mcp__<server>__<tool>, whitespace or JSON array); prices each server by \
+                its tool count"
+    )]
+    tools: Option<PathBuf>,
+
+    #[arg(long, hide = true)]
+    now: Option<String>,
+
+    #[arg(long, help = "Print the report as JSON on stdout instead of text")]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -433,6 +468,8 @@ fn main() -> Result<()> {
 
         Command::Usage { action: UsageAction::Report(args) } => run_usage_report(&args),
 
+        Command::Usage { action: UsageAction::McpReport(args) } => run_mcp_report(&args),
+
         // Dispatched before `Cli::parse`, so clap can never exit 2 on its behalf.
         Command::Usage { action: UsageAction::Record { .. } } => Ok(()),
     }
@@ -486,16 +523,9 @@ fn run_usage_report(args: &UsageReportArgs) -> Result<()> {
     use skill_lint::usage::{self, ReportInput, Window};
 
     let window: Window = args.since.parse().map_err(anyhow::Error::msg)?;
-    let now = match &args.now {
-        Some(ts) => usage::parse_rfc3339(ts).with_context(|| format!("--now '{ts}' is not RFC 3339"))?,
-        None => usage::now_secs(),
-    };
+    let now = report_now(args.now.as_deref())?;
     let home = std::env::var_os("HOME");
-    let log = match &args.log {
-        Some(log) => log.clone(),
-        None => usage::default_log_path(std::env::var_os("XDG_STATE_HOME"), home.clone())
-            .context("neither XDG_STATE_HOME nor HOME is set; pass --log")?,
-    };
+    let log = report_log(args.log.as_deref(), home.clone())?;
     let skills_dir = match &args.skills_dir {
         Some(dir) => dir.clone(),
         None => usage::default_skills_dir(home).context("HOME is unset; pass --skills-dir")?,
@@ -520,6 +550,97 @@ fn run_usage_report(args: &UsageReportArgs) -> Result<()> {
         print_usage_report(&report);
     }
     Ok(())
+}
+
+fn report_now(now: Option<&str>) -> Result<i64> {
+    match now {
+        Some(ts) => skill_lint::usage::parse_rfc3339(ts).with_context(|| format!("--now '{ts}' is not RFC 3339")),
+        None => Ok(skill_lint::usage::now_secs()),
+    }
+}
+
+fn report_log(log: Option<&std::path::Path>, home: Option<std::ffi::OsString>) -> Result<PathBuf> {
+    match log {
+        Some(log) => Ok(log.to_path_buf()),
+        None => skill_lint::usage::default_log_path(std::env::var_os("XDG_STATE_HOME"), home)
+            .context("neither XDG_STATE_HOME nor HOME is set; pass --log"),
+    }
+}
+
+fn run_mcp_report(args: &McpReportArgs) -> Result<()> {
+    use skill_lint::mcp::{self, McpReportInput};
+    use skill_lint::usage::Window;
+
+    let window: Window = args.since.parse().map_err(anyhow::Error::msg)?;
+    let now = report_now(args.now.as_deref())?;
+    let home = std::env::var_os("HOME");
+    let log = report_log(args.log.as_deref(), home.clone())?;
+    let configs = if args.config.is_empty() {
+        let path = mcp::default_config_path(home).context("HOME is unset; pass --config")?;
+        vec![mcp::read_config(&path, false)?]
+    } else {
+        args.config.iter().map(|p| mcp::read_config(p, true)).collect::<Result<Vec<_>>>()?
+    };
+    let tools = args.tools.as_deref().map(mcp::read_tools).transpose()?;
+
+    let report = mcp::report(McpReportInput { log: &log, now, window, window_label: &args.since, configs, tools })?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report).context("rendering JSON")?);
+    } else {
+        print_mcp_report(&report);
+    }
+    Ok(())
+}
+
+fn print_mcp_report(r: &skill_lint::mcp::McpReport) {
+    let absent = if r.log_present { "" } else { "  (absent: nothing recorded yet)" };
+    println!("usage log: {}{absent}", r.log);
+    match &r.since {
+        Some(since) => println!("window:    {} (since {since}, until {})", r.window, r.now),
+        None => println!("window:    all (until {})", r.now),
+    }
+    println!(
+        "events:    {} MCP call(s) in window; {} line(s) read, {} skill, {} malformed",
+        r.events_in_window, r.lines_read, r.skill_lines, r.malformed_lines
+    );
+    for c in &r.configs {
+        let state = if c.present { format!("{} server(s)", c.servers.len()) } else { "absent".to_owned() };
+        println!("config:    {} ({state})", c.path);
+    }
+    println!("configured: {} distinct server(s)", r.configured);
+    match &r.tools_file {
+        Some(t) => println!("tools:     {} ({} tool name(s) across {} server(s))", t.path, t.tools, t.servers),
+        None => println!("tools:     no --tools list given; servers are not priced by tool count"),
+    }
+
+    let count = |n: Option<usize>| n.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    println!("\nused in window ({}):", r.used.len());
+    if !r.used.is_empty() {
+        println!("  {:>5}  {:>7}  {:<20}  server", "calls", "tools", "last used");
+    }
+    for u in &r.used {
+        let mark = match &u.config_name {
+            None => "   (not configured)".to_owned(),
+            Some(name) if *name != u.server => format!("   (configured as {name})"),
+            Some(_) => String::new(),
+        };
+        let tools = format!("{}/{}", u.distinct_tools, count(u.tool_count));
+        println!("  {:>5}  {:>7}  {:<20}  {}{mark}", u.calls, tools, u.last_used, u.server);
+    }
+
+    println!(
+        "\nconfigured but unused in window ({}, {} tool name(s) priced) — retire candidates, most tools first:",
+        r.unused.len(),
+        r.unused_tool_names
+    );
+    if !r.unused.is_empty() {
+        println!("  {:>5}  {:<20}  server", "tools", "last seen");
+    }
+    for u in &r.unused {
+        let seen = u.last_seen.as_deref().unwrap_or("never");
+        let mark = if u.config_name == u.server { String::new() } else { format!("   (configured as {})", u.config_name) };
+        println!("  {:>5}  {:<20}  {}{mark}", count(u.tool_count), seen, u.server);
+    }
 }
 
 fn print_usage_report(r: &skill_lint::usage::UsageReport) {

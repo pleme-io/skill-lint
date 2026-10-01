@@ -1,0 +1,1 @@
+{"session_id":"sess-5","cwd":"/home/u/repo","hook_event_name":"PostToolUse","tool_name":"mcp__search-srv__query","tool_input":{"q":"x"},"tool_response":{"ok":true}}

@@ -217,4 +217,43 @@ every deployed skill least used first — never-seen before seen-long-ago — wi
 its listing cost and the cumulative chars freed, marking where the listing
 would fit (`--budget-chars` / `--window-tokens`, as `budget`). A missing log is
 zero events, not an error; an unreadable line is counted as malformed, never
-silently dropped.
+silently dropped. MCP lines in the same log are counted as `mcp_lines`, not
+malformed.
+
+### MCP servers — `usage mcp-report`
+
+Every configured MCP server costs every session its tool names and its
+instruction block, used or not. Wired as a `PreToolUse` hook with matcher
+`mcp__.*`, `usage record` also writes one line per MCP tool call:
+
+```json
+{"ts":"2026-10-01T14:33:05Z","event":"PreToolUse","trigger":"mcp","server":"github","tool":"get_me","session_id":"…","cwd":"/…"}
+```
+
+`tool_name` `mcp__<server>__<tool>` is split at the first `__` after the
+prefix. **No `tool_input` is ever stored for an MCP call**: arguments carry
+queries and secrets. Only `PreToolUse` counts, as for skills.
+
+```
+skill-lint usage mcp-report [--since 30d] [--config ~/.claude.json]... [--tools <names-file>] [--json]
+```
+
+Per server in the window: calls, distinct tools used (and, with `--tools`, out
+of how many it registers), last use, and whether it is configured. Then the
+configured servers with no call in the window, the retire candidates, ranked by
+tool count (unknown last) with their last use ever.
+
+- **Configured set:** the top-level `mcpServers` map of each `--config` file
+  (repeatable, unioned; `.mcp.json` has the same shape). The default is
+  `$HOME/.claude.json`, the user scope every session loads; that is where
+  blackmatter-claude merges its declared servers. `_retiredMcpServers` and
+  per-project `projects.<dir>.mcpServers` are not read: they do not load in
+  every session. A missing default is reported as `present: false`; a missing
+  explicit `--config` fails.
+- **Name join:** a configured name maps to its tool prefix the way Claude Code
+  builds it (every char outside `[A-Za-z0-9_-]` becomes `_`), so `my.server`
+  matches `mcp__my_server__*`. Servers used but not in any config (claude.ai
+  connectors, plugins) are listed as not configured.
+- **Tool counts:** nothing on disk lists a server's tools, so `--tools` takes a
+  file of `mcp__<server>__<tool>` names (whitespace-separated or a JSON array;
+  anything else is ignored), such as a pasted deferred-tool listing.

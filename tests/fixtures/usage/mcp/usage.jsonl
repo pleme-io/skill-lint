@@ -1,0 +1,11 @@
+{"ts":"2026-09-30T10:00:00Z","event":"PreToolUse","trigger":"mcp","server":"alpha-srv","tool":"list","session_id":"s1","cwd":"/r"}
+{"ts":"2026-09-29T10:00:00Z","event":"PreToolUse","trigger":"mcp","server":"alpha-srv","tool":"list","session_id":"s1","cwd":"/r"}
+{"ts":"2026-09-28T10:00:00Z","event":"PreToolUse","trigger":"mcp","server":"alpha-srv","tool":"get","session_id":"s2","cwd":"/r"}
+{"ts":"2026-09-20T10:00:00Z","event":"PreToolUse","trigger":"mcp","server":"beta-srv","tool":"search","session_id":"s2","cwd":"/r"}
+{"ts":"2026-09-27T10:00:00Z","event":"PreToolUse","trigger":"mcp","server":"hosted_Docs_srv","tool":"read_page","session_id":"s3","cwd":"/r"}
+{"ts":"2026-09-26T10:00:00Z","event":"PreToolUse","trigger":"mcp","server":"dotted_srv","tool":"ping","session_id":"s3","cwd":"/r"}
+{"ts":"2026-07-01T00:00:00Z","event":"PreToolUse","trigger":"mcp","server":"gamma-srv","tool":"run","session_id":"s0","cwd":"/r"}
+{"ts":"2026-09-30T09:00:00Z","event":"PreToolUse","skill":"alpha","trigger":"tool","session_id":"s1","cwd":"/r","tool_input":{"skill":"alpha"}}
+{"ts":"2026-09-30T09:00:00Z","event":"PreToolUse","trigger":"mcp","server":"","tool":"x","session_id":"s4","cwd":"/r"}
+not json at all
+{"ts":"yesterday","event":"PreToolUse","trigger":"mcp","server":"alpha-srv","tool":"list","session_id":"s4","cwd":"/r"}

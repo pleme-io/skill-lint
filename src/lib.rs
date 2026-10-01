@@ -4,6 +4,7 @@ pub mod check;
 pub mod claudemd;
 pub mod error;
 pub mod markdown;
+pub mod mcp;
 pub mod model;
 pub mod ratchet;
 pub mod usage;

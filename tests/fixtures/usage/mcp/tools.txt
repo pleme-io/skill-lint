@@ -1,0 +1,12 @@
+mcp__alpha-srv__list
+mcp__alpha-srv__get
+mcp__alpha-srv__put
+mcp__gamma-srv__run
+mcp__gamma-srv__stop
+mcp__gamma-srv__status
+mcp__gamma-srv__logs
+mcp__gamma-srv__exec
+mcp__delta-srv__a
+mcp__delta-srv__b
+Bash
+Read

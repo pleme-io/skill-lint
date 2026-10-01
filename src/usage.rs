@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::budget;
+use crate::mcp::{self, McpRecord};
 
 /// Log location under the state directory.
 pub const LOG_RELATIVE: &str = "skill-lint/usage.jsonl";
@@ -75,13 +76,37 @@ pub struct UsageRecord {
     pub event: String,
     pub skill: String,
     pub trigger: Trigger,
+    #[serde(flatten)]
+    pub origin: Origin,
+    /// The Skill tool's input exactly as the hook received it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
     pub session_id: Option<String>,
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
-    /// The Skill tool's input exactly as the hook received it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_input: Option<Value>,
+}
+
+impl Origin {
+    #[must_use]
+    pub fn of(event: &Value) -> Self {
+        Self {
+            session_id: str_field(event, "session_id"),
+            cwd: str_field(event, "cwd"),
+            transcript_path: str_field(event, "transcript_path"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LogLine {
+    Skill(UsageRecord),
+    Mcp(McpRecord),
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -225,6 +250,16 @@ impl std::str::FromStr for Window {
     }
 }
 
+impl Window {
+    #[must_use]
+    pub fn lower_bound(self, now: i64) -> Option<i64> {
+        match self {
+            Self::All => None,
+            Self::Seconds(s) => Some(now - s),
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // record
 // ═══════════════════════════════════════════════════════════════════
@@ -272,9 +307,16 @@ fn str_field(event: &Value, key: &str) -> Option<String> { event.get(key).and_th
 /// The usage line one hook event yields, or `None` when it is not a skill
 /// invocation (or is not understood — which is the same answer here).
 #[must_use]
-pub fn record(input: &[u8], env: &RecordEnv<'_>) -> Option<UsageRecord> {
+pub fn record(input: &[u8], env: &RecordEnv<'_>) -> Option<LogLine> {
     let event: Value = serde_json::from_slice(input).ok()?;
     let event_name = str_field(&event, "hook_event_name");
+
+    if let Some(rest) = event.get("tool_name").and_then(Value::as_str).and_then(|t| t.strip_prefix(mcp::TOOL_PREFIX)) {
+        if event_name.as_deref().is_some_and(|e| e != "PreToolUse") {
+            return None;
+        }
+        return mcp::record(rest, &event, event_name, env.now).map(LogLine::Mcp);
+    }
 
     let (skill, trigger, tool_input) = if let Some(tool) = event.get("tool_name").and_then(Value::as_str) {
         // PreToolUse only: wiring PostToolUse too must not double-count.
@@ -298,16 +340,14 @@ pub fn record(input: &[u8], env: &RecordEnv<'_>) -> Option<UsageRecord> {
         Trigger::Tool => "PreToolUse",
         Trigger::Slash => "UserPromptSubmit",
     };
-    Some(UsageRecord {
+    Some(LogLine::Skill(UsageRecord {
         ts: format_rfc3339(env.now),
         event: event_name.unwrap_or_else(|| default_event.to_owned()),
         skill,
         trigger,
-        session_id: str_field(&event, "session_id"),
-        cwd: str_field(&event, "cwd"),
-        transcript_path: str_field(&event, "transcript_path"),
+        origin: Origin::of(&event),
         tool_input,
-    })
+    }))
 }
 
 /// Append one line to `log`, creating its directory. One `write` call on an
@@ -316,7 +356,7 @@ pub fn record(input: &[u8], env: &RecordEnv<'_>) -> Option<UsageRecord> {
 /// # Errors
 ///
 /// Any I/O failure. The hook caller discards it.
-pub fn append(log: &Path, line: &UsageRecord) -> std::io::Result<()> {
+pub fn append(log: &Path, line: &LogLine) -> std::io::Result<()> {
     let mut buf = serde_json::to_vec(line)?;
     buf.push(b'\n');
     if let Some(dir) = log.parent() {
@@ -373,6 +413,7 @@ pub struct UsageReport {
     pub lines_read: usize,
     /// Lines that are not a usage record or carry an unreadable `ts`.
     pub malformed_lines: usize,
+    pub mcp_lines: usize,
     pub events_in_window: usize,
     pub deployed: usize,
     pub used: Vec<SkillUse>,
@@ -387,6 +428,28 @@ pub struct UsageReport {
     pub drop_order: Vec<DropEntry>,
     /// How many of `drop_order` go before the listing fits; 0 within budget.
     pub drops_needed: usize,
+}
+
+pub(crate) enum Parsed {
+    Skill(UsageRecord, i64),
+    Mcp(McpRecord, i64),
+    Malformed,
+}
+
+pub(crate) fn parse_line(line: &str) -> Parsed {
+    match serde_json::from_str::<LogLine>(line) {
+        Ok(LogLine::Skill(rec)) => parse_rfc3339(&rec.ts).map_or(Parsed::Malformed, |ts| Parsed::Skill(rec, ts)),
+        Ok(LogLine::Mcp(rec)) => parse_rfc3339(&rec.ts).map_or(Parsed::Malformed, |ts| Parsed::Mcp(rec, ts)),
+        Err(_) => Parsed::Malformed,
+    }
+}
+
+pub(crate) fn read_log(log: &Path) -> anyhow::Result<(String, bool)> {
+    match std::fs::read_to_string(log) {
+        Ok(text) => Ok((text, true)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((String::new(), false)),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("reading {}", log.display()))),
+    }
 }
 
 /// Inputs of [`report`].
@@ -415,30 +478,27 @@ struct Tally {
 /// A log that exists but cannot be read, or an unreadable skills directory.
 /// An ABSENT log is not an error: it is zero events, reported as such.
 pub fn report(input: &ReportInput<'_>) -> anyhow::Result<UsageReport> {
-    let since = match input.window {
-        Window::All => None,
-        Window::Seconds(s) => Some(input.now - s),
-    };
-
-    let (text, log_present) = match std::fs::read_to_string(input.log) {
-        Ok(text) => (text, true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
-        Err(e) => return Err(anyhow::Error::new(e).context(format!("reading {}", input.log.display()))),
-    };
+    let since = input.window.lower_bound(input.now);
+    let (text, log_present) = read_log(input.log)?;
 
     let mut lines_read = 0;
     let mut malformed_lines = 0;
+    let mut mcp_lines = 0;
     let mut events_in_window = 0;
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     let mut last_seen: BTreeMap<String, i64> = BTreeMap::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         lines_read += 1;
-        let Some((rec, ts)) = serde_json::from_str::<UsageRecord>(line)
-            .ok()
-            .and_then(|r| parse_rfc3339(&r.ts).map(|ts| (r, ts)))
-        else {
-            malformed_lines += 1;
-            continue;
+        let (rec, ts) = match parse_line(line) {
+            Parsed::Skill(rec, ts) => (rec, ts),
+            Parsed::Mcp(..) => {
+                mcp_lines += 1;
+                continue;
+            }
+            Parsed::Malformed => {
+                malformed_lines += 1;
+                continue;
+            }
         };
         let seen = last_seen.entry(rec.skill.clone()).or_insert(ts);
         *seen = (*seen).max(ts);
@@ -517,6 +577,7 @@ pub fn report(input: &ReportInput<'_>) -> anyhow::Result<UsageReport> {
         since: since.map(format_rfc3339),
         lines_read,
         malformed_lines,
+        mcp_lines,
         events_in_window,
         deployed: listing.entries.len(),
         used,

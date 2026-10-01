@@ -6,3 +6,5 @@
 {"ts":"2026-09-28T00:00:00Z","event":"PreToolUse","skill":"plugin:docx","trigger":"tool","session_id":"s3","cwd":"/r","tool_input":{"skill":"plugin:docx"}}
 not json at all
 {"ts":"yesterday","event":"PreToolUse","skill":"beta","trigger":"tool","session_id":"s4","cwd":"/r"}
+{"ts":"2026-09-30T11:00:00Z","event":"PreToolUse","trigger":"mcp","server":"alpha-srv","tool":"list","session_id":"s1","cwd":"/r"}
+{"ts":"2026-09-30T12:00:00Z","event":"PreToolUse","trigger":"mcp","server":"beta-srv","tool":"get","session_id":"s1","cwd":"/r"}

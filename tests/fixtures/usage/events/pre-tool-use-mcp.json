@@ -1,0 +1,1 @@
+{"session_id":"sess-5","transcript_path":"/home/u/.claude/projects/-home-u-repo/sess-5.jsonl","cwd":"/home/u/repo","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"mcp__search-srv__query","tool_input":{"q":"SECRET-QUERY-TEXT","token":"SECRET-TOKEN-VALUE"},"tool_use_id":"toolu_05"}
