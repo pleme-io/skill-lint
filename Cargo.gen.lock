@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "784ab0b80d9e6c133647c4a46499d00e08b16a8eaaeb0c47e926ff9c1aecb1e0",
+  "cargo_lock_sha256": "ebfad2c8800328c45061f720b611670831d2bc91c46eab12c0997da9d2e8c02a",
   "manifest_sha256": {
-    "Cargo.toml": "0ea21ee5553f76f7c8e4fc9904f79990d5e48fe5556b150235db855e88a7fd1e"
+    "Cargo.toml": "831f1a5b79d012ce394d198f75f20e34df959b36df6ca976e5444ab340decfb2"
   },
   "target_resolves": {
     "base": {
@@ -1158,7 +1158,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "skill-lint-0.1.8": {
+      "skill-lint-0.1.9": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -2224,7 +2224,7 @@
     "serde_yaml_ng-0.10.0": {
       "edition": "2021"
     },
-    "skill-lint-0.1.8": {
+    "skill-lint-0.1.9": {
       "edition": "2024",
       "lib_target": {
         "name": "skill_lint",
