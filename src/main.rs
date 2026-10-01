@@ -253,9 +253,91 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Skill usage: record each invocation from a Claude Code hook, then report
+    /// which skills are used, which are not, and the order the listing budget
+    /// drops them in.
+    ///
+    /// `budget` cannot say which descriptions the platform drops on overflow,
+    /// because that order is by invocation frequency and frequency was not on
+    /// disk. `record` puts it on disk; `report` reads it back.
+    Usage {
+        #[command(subcommand)]
+        action: UsageAction,
+    },
 }
 
+#[derive(Subcommand)]
+enum UsageAction {
+    /// Read ONE hook event (JSON) on stdin and append a line to the usage log
+    /// when it is a skill invocation.
+    ///
+    /// Wire it as a `PreToolUse` hook with matcher `Skill` and as a
+    /// `UserPromptSubmit` hook. It never fails and never prints: a hook's exit
+    /// status and stdout reach the session, so every error — malformed input,
+    /// an unwritable log, a flag this binary does not know — ends in exit 0
+    /// with nothing written.
+    Record {
+        /// Deployed skills, for validating a typed `/<name>`. Defaults to
+        /// `$HOME/.claude/skills`.
+        #[arg(long)]
+        skills_dir: Option<PathBuf>,
+
+        /// The log. Defaults to `$XDG_STATE_HOME/skill-lint/usage.jsonl`, else
+        /// `$HOME/.local/state/skill-lint/usage.jsonl`.
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
+
+    /// Counts per skill, deployed skills unused in the window, and the drop
+    /// order the listing budget implies (least used first).
+    Report(UsageReportArgs),
+}
+
+#[derive(clap::Args)]
+struct UsageReportArgs {
+    /// Window: `<N>h`, `<N>d`, `<N>w`, or `all`.
+    #[arg(long, default_value = skill_lint::usage::DEFAULT_SINCE)]
+    since: String,
+
+    /// Deployed skills to join against. Defaults to `$HOME/.claude/skills`.
+    #[arg(long)]
+    skills_dir: Option<PathBuf>,
+
+    /// The log. Same default as `record`.
+    #[arg(long)]
+    log: Option<PathBuf>,
+
+    /// Context window in tokens; the listing budget is a fraction of it.
+    #[arg(long, default_value_t = 1_000_000)]
+    window_tokens: usize,
+
+    /// Exact listing budget in characters, overriding `--window-tokens`.
+    #[arg(long)]
+    budget_chars: Option<usize>,
+
+    /// Per-entry cap (`skillListingMaxDescChars`).
+    #[arg(long, default_value_t = skill_lint::budget::DEFAULT_MAX_DESC_CHARS)]
+    max_desc_chars: usize,
+
+    /// Evaluate the window at this RFC 3339 instant instead of now.
+    #[arg(long, hide = true)]
+    now: Option<String>,
+
+    /// Print the report as JSON on stdout instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Most a hook event may be. A larger one is not parsed, which records nothing.
+const MAX_EVENT_BYTES: u64 = 8 << 20;
+
 fn main() -> Result<()> {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == "usage") && args.get(2).is_some_and(|a| a == "record") {
+        run_usage_record(args);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -346,6 +428,150 @@ fn main() -> Result<()> {
 
         Command::Chain { dirs, home, global, max_bytes, max_file_bytes, json } => {
             run_chain(&dirs, home, global, max_bytes, max_file_bytes, json)
+        }
+
+        Command::Usage { action: UsageAction::Report(args) } => run_usage_report(&args),
+
+        // Dispatched before `Cli::parse`, so clap can never exit 2 on its behalf.
+        Command::Usage { action: UsageAction::Record { .. } } => Ok(()),
+    }
+}
+
+/// The `usage record` hook. Never returns, always exits 0, prints nothing.
+///
+/// It is dispatched before `Cli::parse` because clap exits 2 on a bad argument,
+/// and exit 2 from a `PreToolUse` hook BLOCKS the tool call (from a
+/// `UserPromptSubmit` hook it erases the prompt). A module that passed a flag an
+/// older binary lacks would otherwise block every Skill call in every session.
+/// A panic is caught and silenced for the same reason.
+fn run_usage_record(args: Vec<std::ffi::OsString>) -> ! {
+    use std::io::Read as _;
+    use skill_lint::usage::{self, RecordEnv};
+
+    std::panic::set_hook(Box::new(|_| {}));
+    let _ = std::panic::catch_unwind(move || {
+        let cli = match Cli::try_parse_from(&args) {
+            Ok(cli) => cli,
+            Err(e) => {
+                // `--help` is a person at a terminal, never a hook.
+                if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) {
+                    let _ = e.print();
+                }
+                return;
+            }
+        };
+        let Command::Usage { action: UsageAction::Record { skills_dir, log } } = cli.command else { return };
+        let home = std::env::var_os("HOME");
+        let Some(log) = log.or_else(|| usage::default_log_path(std::env::var_os("XDG_STATE_HOME"), home.clone()))
+        else {
+            return;
+        };
+        let skills_dir = skills_dir.or_else(|| usage::default_skills_dir(home));
+
+        let mut input = Vec::new();
+        if std::io::stdin().lock().take(MAX_EVENT_BYTES).read_to_end(&mut input).is_err() {
+            return;
+        }
+        let env = RecordEnv { skills_dir: skills_dir.as_deref(), now: usage::now_secs() };
+        if let Some(line) = usage::record(&input, &env) {
+            let _ = usage::append(&log, &line);
+        }
+    });
+    process::exit(0)
+}
+
+/// The `usage report` subcommand.
+fn run_usage_report(args: &UsageReportArgs) -> Result<()> {
+    use skill_lint::usage::{self, ReportInput, Window};
+
+    let window: Window = args.since.parse().map_err(anyhow::Error::msg)?;
+    let now = match &args.now {
+        Some(ts) => usage::parse_rfc3339(ts).with_context(|| format!("--now '{ts}' is not RFC 3339"))?,
+        None => usage::now_secs(),
+    };
+    let home = std::env::var_os("HOME");
+    let log = match &args.log {
+        Some(log) => log.clone(),
+        None => usage::default_log_path(std::env::var_os("XDG_STATE_HOME"), home.clone())
+            .context("neither XDG_STATE_HOME nor HOME is set; pass --log")?,
+    };
+    let skills_dir = match &args.skills_dir {
+        Some(dir) => dir.clone(),
+        None => usage::default_skills_dir(home).context("HOME is unset; pass --skills-dir")?,
+    };
+    let budget_chars = args.budget_chars.unwrap_or_else(|| {
+        skill_lint::budget::budget_from_window(args.window_tokens, skill_lint::budget::DEFAULT_BUDGET_FRACTION)
+    });
+
+    let report = usage::report(&ReportInput {
+        log: &log,
+        skills_dir: &skills_dir,
+        now,
+        window,
+        window_label: &args.since,
+        budget_chars,
+        max_desc_chars: args.max_desc_chars,
+    })?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report).context("rendering JSON")?);
+    } else {
+        print_usage_report(&report);
+    }
+    Ok(())
+}
+
+fn print_usage_report(r: &skill_lint::usage::UsageReport) {
+    let absent = if r.log_present { "" } else { "  (absent: nothing recorded yet)" };
+    println!("usage log: {}{absent}", r.log);
+    match &r.since {
+        Some(since) => println!("window:    {} (since {since}, until {})", r.window, r.now),
+        None => println!("window:    all (until {})", r.now),
+    }
+    println!(
+        "events:    {} in window; {} line(s) read, {} malformed",
+        r.events_in_window, r.lines_read, r.malformed_lines
+    );
+    println!("deployed:  {} skill(s) under {}", r.deployed, r.skills_dir);
+
+    println!("\nused in window ({}):", r.used.len());
+    if !r.used.is_empty() {
+        println!("  {:>5} {:>5} {:>5}  {:<20}  skill", "total", "slash", "tool", "last used");
+    }
+    for u in &r.used {
+        let mark = if u.deployed { "" } else { "   (not deployed)" };
+        println!("  {:>5} {:>5} {:>5}  {:<20}  {}{mark}", u.total, u.slash, u.tool, u.last_used, u.skill);
+    }
+
+    println!("\ndeployed but unused in window ({}) — retire/merge candidates:", r.unused.len());
+    for u in &r.unused {
+        let seen = u.last_seen.as_deref().map_or_else(|| "never seen".to_owned(), |s| format!("last seen {s}"));
+        println!("  {:<40} {seen}", u.skill);
+    }
+
+    let verdict = if r.drops_needed == 0 {
+        format!("within the {}-char budget", r.budget_chars)
+    } else {
+        format!(
+            "OVER the {}-char budget by {}: the first {} below go first",
+            r.budget_chars,
+            r.listing_chars.saturating_sub(r.budget_chars),
+            r.drops_needed
+        )
+    };
+    println!("\ndrop order, least used first — listing {} chars, {verdict}:", r.listing_chars);
+    println!("  {:>5}  {:<20}  {:>7}  {:>10}  skill", "uses", "last seen", "listing", "cumulative");
+    for (i, d) in r.drop_order.iter().enumerate() {
+        println!(
+            "  {:>5}  {:<20}  {:>7}  {:>10}  {}",
+            d.uses,
+            d.last_seen.as_deref().unwrap_or("never"),
+            d.listing_chars,
+            d.cumulative_chars,
+            d.skill
+        );
+        if r.drops_needed > 0 && i + 1 == r.drops_needed {
+            println!("  ── the listing fits once everything above this line is dropped ──");
         }
     }
 }

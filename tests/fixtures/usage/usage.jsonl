@@ -1,0 +1,8 @@
+{"ts":"2026-09-30T10:00:00Z","event":"PreToolUse","skill":"alpha","trigger":"tool","session_id":"s1","cwd":"/r","tool_input":{"skill":"alpha"}}
+{"ts":"2026-09-29T09:00:00Z","event":"UserPromptSubmit","skill":"alpha","trigger":"slash","session_id":"s1","cwd":"/r"}
+{"ts":"2026-09-20T08:00:00Z","event":"PreToolUse","skill":"alpha","trigger":"tool","session_id":"s2","cwd":"/r","tool_input":{"skill":"alpha"}}
+{"ts":"2026-09-25T12:00:00Z","event":"PreToolUse","skill":"beta","trigger":"tool","session_id":"s2","cwd":"/r","tool_input":{"skill":"beta"}}
+{"ts":"2026-07-01T00:00:00Z","event":"PreToolUse","skill":"gamma","trigger":"tool","session_id":"s0","cwd":"/r","tool_input":{"skill":"gamma"}}
+{"ts":"2026-09-28T00:00:00Z","event":"PreToolUse","skill":"plugin:docx","trigger":"tool","session_id":"s3","cwd":"/r","tool_input":{"skill":"plugin:docx"}}
+not json at all
+{"ts":"yesterday","event":"PreToolUse","skill":"beta","trigger":"tool","session_id":"s4","cwd":"/r"}

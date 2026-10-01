@@ -6,6 +6,7 @@ pub mod error;
 pub mod markdown;
 pub mod model;
 pub mod ratchet;
+pub mod usage;
 pub mod workflows;
 
 // Re-export key types for downstream consumers

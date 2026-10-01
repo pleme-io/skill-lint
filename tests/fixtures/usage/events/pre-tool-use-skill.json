@@ -1,0 +1,1 @@
+{"session_id":"sess-1","transcript_path":"/home/u/.claude/projects/-home-u-repo/sess-1.jsonl","cwd":"/home/u/repo","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"alpha","args":"find a json parser"},"tool_use_id":"toolu_01"}

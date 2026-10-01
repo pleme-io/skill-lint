@@ -177,3 +177,44 @@ the total is a ceiling); `.claude/rules/`.
 `--json` prints the same report as one JSON document: per session, `dir`,
 `total_bytes`, the ceilings, `files` (`path`, `bytes`, `depth`, `origin` —
 `global` / `chain` / `import` — `imported_by`, `line`), `cycles` and `errors`.
+
+## `usage` — which skills are actually invoked
+
+`budget` will not guess which descriptions the platform drops on overflow: that
+order is by invocation frequency, and frequency was not on disk. `usage` puts it
+there. `usage record` runs as a Claude Code hook (`PreToolUse` with matcher
+`Skill`, and `UserPromptSubmit`) and appends one line per skill invocation to
+`$XDG_STATE_HOME/skill-lint/usage.jsonl` (else `~/.local/state/…`):
+
+```json
+{"ts":"2026-10-01T14:33:05Z","event":"PreToolUse","skill":"bidama","trigger":"tool","session_id":"…","cwd":"/…","transcript_path":"/…","tool_input":{"skill":"bidama"}}
+```
+
+`trigger` is `tool` (the model called the `Skill` tool; the name is
+`tool_input.skill`, measured from recorded transcripts, with `command` / `name`
+read defensively and the raw `tool_input` kept) or `slash` (the prompt starts
+with `/<name>` and `<name>` is a deployed `~/.claude/skills/<name>/SKILL.md`, so
+`/clear` is not a skill). `transcript_path` and `tool_input` are omitted when
+absent.
+
+**The recorder never touches the session.** A hook's exit status and stdout
+reach the agent: exit 2 blocks the tool call or erases the prompt, and a
+`UserPromptSubmit` hook's stdout is added to the context. So every failure —
+malformed input, an unwritable log, a panic, and a flag this binary does not
+know — ends in exit 0 with nothing printed and nothing written. `usage record`
+is dispatched before `Cli::parse` for that last one: clap exits 2 on a bad
+argument. One `write` per line on an `O_APPEND` file, so concurrent sessions
+interleave whole lines.
+
+```
+skill-lint usage report [--since 30d|12h|2w|all] [--skills-dir ~/.claude/skills] [--json]
+```
+
+Per skill in the window: total, slash, tool, last used. Then deployed skills
+with no use in the window (retire/merge candidates, with their last use ever),
+skills used but not deployed (plugins, retired ones), and the **drop order**:
+every deployed skill least used first — never-seen before seen-long-ago — with
+its listing cost and the cumulative chars freed, marking where the listing
+would fit (`--budget-chars` / `--window-tokens`, as `budget`). A missing log is
+zero events, not an error; an unreadable line is counted as malformed, never
+silently dropped.
