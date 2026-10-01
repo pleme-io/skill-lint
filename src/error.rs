@@ -80,6 +80,15 @@ pub enum CheckKind {
     /// `rust-auto-release.yml` DURING the session it spent enforcing that rule.
     /// The rule was stated in two places and still lost — unenforced, not weak.
     WorkflowRun,
+    /// The `CLAUDE.md` load chain of one session: every file Claude Code reads
+    /// before the first token of work, imports included.
+    ///
+    /// [`Self::ClaudeMdFile`] measures one file. Nothing measured the SUM —
+    /// the global file, every ancestor's `CLAUDE.md`, and every `@path` they
+    /// import — so it regrew in silence: ~130k chars for a session in one repo,
+    /// measured 2026-10-01. And a dangling `@path` is a silent no-op in Claude
+    /// Code, so an import that loads nothing looks exactly like one that works.
+    ClaudeMdChain,
 }
 
 impl fmt::Display for CheckKind {
@@ -99,6 +108,7 @@ impl fmt::Display for CheckKind {
             Self::ClaudeMdEntry => write!(f, "claudemd-entry"),
             Self::ClaudeMdFile => write!(f, "claudemd-file"),
             Self::WorkflowRun => write!(f, "workflow-run"),
+            Self::ClaudeMdChain => write!(f, "claudemd-chain"),
         }
     }
 }
@@ -146,6 +156,7 @@ impl FromStr for CheckKind {
             "claudemd-entry" => Ok(Self::ClaudeMdEntry),
             "claudemd-file" => Ok(Self::ClaudeMdFile),
             "workflow-run" => Ok(Self::WorkflowRun),
+            "claudemd-chain" => Ok(Self::ClaudeMdChain),
             _ => Err(ParseCheckKindError(s.to_owned())),
         }
     }
@@ -239,6 +250,51 @@ pub enum LintError {
         lines: usize,
         recorded: usize,
         grew: usize,
+    },
+
+    /// The `chain` sibling of [`Self::NoDocsScanned`], and the same rule: a
+    /// session that resolves zero files measured nothing, and a total of 0 B is
+    /// a vacuous pass. It is far likelier that `--dir`, `--home` or `--global`
+    /// points somewhere other than intended than that a session loads nothing.
+    #[error("[{kind}] the session in {dir} loads no CLAUDE.md at all (searched: {searched}) — a run that measures zero files is a vacuous pass, not a success. Check --dir, --home and --global.")]
+    NoChainFiles { kind: CheckKind, dir: String, searched: String },
+
+    #[error("[{kind}] {file}:{line} imports '@{target}', which resolves to {resolved} — no file is there. Claude Code skips a dangling import without a word, so whatever it was meant to load is silently absent from every session. Fix the path, or put it in backticks if it was never meant as an import.")]
+    ImportMissing {
+        kind: CheckKind,
+        file: String,
+        line: usize,
+        target: String,
+        resolved: String,
+    },
+
+    #[error("[{kind}] {file}:{line} imports '@{target}' at hop {hop}, past the {limit}-hop import limit — Claude Code stops following imports there and drops this one without a word. Import it from a shallower file.")]
+    ImportTooDeep {
+        kind: CheckKind,
+        file: String,
+        line: usize,
+        target: String,
+        hop: usize,
+        limit: usize,
+    },
+
+    #[error("[{kind}] a session in {dir} loads {bytes} B of CLAUDE.md context, over the {cap} B --max-bytes ceiling by {over} B. Every byte is read before the first token of work in every session started there. Move material into docs a file LINKS to (read on demand) rather than IMPORTS (read always).")]
+    ChainTooLarge {
+        kind: CheckKind,
+        dir: String,
+        bytes: usize,
+        cap: usize,
+        over: usize,
+    },
+
+    #[error("[{kind}] {file} is {bytes} B, over the {cap} B --max-file-bytes ceiling by {over} B (loaded by the session in {dir}).")]
+    ChainFileTooLarge {
+        kind: CheckKind,
+        dir: String,
+        file: String,
+        bytes: usize,
+        cap: usize,
+        over: usize,
     },
 
     #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
@@ -391,6 +447,11 @@ impl LintError {
             | Self::NoWorkflowsScanned { kind, .. }
             | Self::InlineShellTooLong { kind, .. }
             | Self::InlineShellGrew { kind, .. }
+            | Self::NoChainFiles { kind, .. }
+            | Self::ImportMissing { kind, .. }
+            | Self::ImportTooDeep { kind, .. }
+            | Self::ChainTooLarge { kind, .. }
+            | Self::ChainFileTooLarge { kind, .. }
             | Self::MissingMapEntry { kind, .. }
             | Self::OrphanMapEntry { kind, .. }
             | Self::MissingFrontmatter { kind, .. }
@@ -435,6 +496,7 @@ mod tests {
         assert_eq!(CheckKind::ClaudeMdEntry.to_string(), "claudemd-entry");
         assert_eq!(CheckKind::ClaudeMdFile.to_string(), "claudemd-file");
         assert_eq!(CheckKind::WorkflowRun.to_string(), "workflow-run");
+        assert_eq!(CheckKind::ClaudeMdChain.to_string(), "claudemd-chain");
     }
 
     /// The message has to carry the measurement AND the move that fixes it.
@@ -495,6 +557,24 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("vacuous pass"), "{msg}");
         assert!(msg.contains("<no files given>"), "{msg}");
+    }
+
+    /// A dangling import is invisible in Claude Code, so the message has to say
+    /// so — and show where the path actually went, because the usual defect is
+    /// a relative path read against the wrong directory.
+    #[test]
+    fn import_missing_names_the_resolved_path_and_the_silence() {
+        let err = LintError::ImportMissing {
+            kind: CheckKind::ClaudeMdChain,
+            file: "~/code/CLAUDE.md".into(),
+            line: 62,
+            target: "docs/x.md".into(),
+            resolved: "~/code/docs/x.md".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("[claudemd-chain] ~/code/CLAUDE.md:62"), "{msg}");
+        assert!(msg.contains("resolves to ~/code/docs/x.md"), "{msg}");
+        assert!(msg.contains("without a word"), "{msg}");
     }
 
     /// The message has to name the SHAPE that hid the defect and the move that
@@ -610,6 +690,11 @@ mod tests {
             (LintError::NoWorkflowsScanned { kind: CheckKind::Discovery, searched: "x".into() }, CheckKind::Discovery),
             (LintError::InlineShellTooLong { kind: CheckKind::WorkflowRun, file: "f".into(), step: "s".into(), line: 1, lines: 4, cap: 3, over: 1 }, CheckKind::WorkflowRun),
             (LintError::InlineShellGrew { kind: CheckKind::WorkflowRun, file: "f".into(), step: "s".into(), line: 1, lines: 5, recorded: 4, grew: 1 }, CheckKind::WorkflowRun),
+            (LintError::NoChainFiles { kind: CheckKind::Discovery, dir: "d".into(), searched: "s".into() }, CheckKind::Discovery),
+            (LintError::ImportMissing { kind: CheckKind::ClaudeMdChain, file: "f".into(), line: 1, target: "t".into(), resolved: "r".into() }, CheckKind::ClaudeMdChain),
+            (LintError::ImportTooDeep { kind: CheckKind::ClaudeMdChain, file: "f".into(), line: 1, target: "t".into(), hop: 6, limit: 5 }, CheckKind::ClaudeMdChain),
+            (LintError::ChainTooLarge { kind: CheckKind::ClaudeMdChain, dir: "d".into(), bytes: 2, cap: 1, over: 1 }, CheckKind::ClaudeMdChain),
+            (LintError::ChainFileTooLarge { kind: CheckKind::ClaudeMdChain, dir: "d".into(), file: "f".into(), bytes: 2, cap: 1, over: 1 }, CheckKind::ClaudeMdChain),
         ];
         for (err, expected_kind) in cases {
             assert_eq!(err.kind(), expected_kind, "wrong kind for {err}");
@@ -681,6 +766,7 @@ mod tests {
             CheckKind::ClaudeMdEntry,
             CheckKind::ClaudeMdFile,
             CheckKind::WorkflowRun,
+            CheckKind::ClaudeMdChain,
         ];
         for kind in kinds {
             let s = kind.to_string();

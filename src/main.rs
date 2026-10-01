@@ -210,6 +210,48 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
+
+    /// Measure the CLAUDE.md load chain of a session — every file Claude Code
+    /// reads before the first token of work, imports included.
+    ///
+    /// `claudemd` measures one file; nothing measured the sum, so it regrew in
+    /// silence. For each `--dir` this resolves the load set in order — the
+    /// global file, then `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`
+    /// from `--home` down to the directory, then every `@path` they import —
+    /// and reports each file and the total.
+    ///
+    /// A dangling `@path` fails the run: Claude Code skips it without a word.
+    /// So does an import past the 5-hop limit, and a session that loads zero
+    /// files (a vacuous pass). Cycles are reported, not failed.
+    Chain {
+        /// A session directory. Repeat for each; each is its own session with
+        /// its own total.
+        #[arg(long = "dir", required = true)]
+        dirs: Vec<PathBuf>,
+
+        /// `$HOME`: the top of the walk and the base of `~/` imports.
+        /// Defaults to the `HOME` environment variable.
+        #[arg(long)]
+        home: Option<PathBuf>,
+
+        /// The global file loaded first in every session. Defaults to
+        /// `<home>/.claude/CLAUDE.md`.
+        #[arg(long)]
+        global: Option<PathBuf>,
+
+        /// Fail when one session's total exceeds this many bytes. Without it the
+        /// total is reported, not gated.
+        #[arg(long)]
+        max_bytes: Option<usize>,
+
+        /// Fail when any one loaded file exceeds this many bytes.
+        #[arg(long)]
+        max_file_bytes: Option<usize>,
+
+        /// Print the report as JSON on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -384,6 +426,10 @@ fn main() -> Result<()> {
 
         Command::Workflows { files, max_run_lines, baseline, write_baseline, top } => {
             run_workflows(&files, max_run_lines, baseline.as_deref(), write_baseline.as_deref(), top)
+        }
+
+        Command::Chain { dirs, home, global, max_bytes, max_file_bytes, json } => {
+            run_chain(&dirs, home, global, max_bytes, max_file_bytes, json)
         }
     }
 }
@@ -607,6 +653,95 @@ fn run_workflows(
     } else {
         eprintln!("\nskill-lint workflows: {} error(s):", report.errors.len());
         for err in &report.errors {
+            eprintln!("  - {err}");
+        }
+        process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// The `chain` subcommand.
+fn run_chain(
+    dirs: &[PathBuf],
+    home: Option<PathBuf>,
+    global: Option<PathBuf>,
+    max_bytes: Option<usize>,
+    max_file_bytes: Option<usize>,
+    json: bool,
+) -> Result<()> {
+    use skill_lint::chain::{self, ChainConfig, ChainReport, Origin, RealFs, tilde};
+
+    let home = match home {
+        Some(home) => home,
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME is unset; pass --home")?),
+    };
+    // Canonical, like every session directory, so `starts_with` compares like
+    // with like: a symlinked $HOME must not make a directory under it look
+    // outside it.
+    let home = std::fs::canonicalize(&home).with_context(|| format!("resolving --home {}", home.display()))?;
+    let global = global.unwrap_or_else(|| home.join(".claude/CLAUDE.md"));
+    let config = ChainConfig { home, global, max_bytes, max_file_bytes };
+
+    let sessions = dirs
+        .iter()
+        .map(|dir| {
+            let dir = std::fs::canonicalize(dir).with_context(|| format!("resolving --dir {}", dir.display()))?;
+            Ok(chain::resolve(&dir, &RealFs, &config))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let report = ChainReport { sessions };
+
+    if json {
+        println!("{}", report.to_json(&config).context("rendering JSON")?);
+    } else {
+        let show = |path: &std::path::Path| tilde(path, &config.home);
+        for session in &report.sessions {
+            println!(
+                "session {} — {} file(s), {} B",
+                show(&session.dir),
+                session.files.len(),
+                session.total_bytes()
+            );
+            for file in &session.files {
+                let (label, by) = match &file.origin {
+                    Origin::Global => ("global", String::new()),
+                    Origin::Chain => ("chain", String::new()),
+                    Origin::Import { by, line } => ("import", format!("   <- {}:{line}", show(by))),
+                };
+                println!(
+                    "  {:>8} B  {label:<6}  {}{}{by}",
+                    file.bytes,
+                    "  ".repeat(file.depth),
+                    show(&file.path)
+                );
+            }
+            match config.max_bytes {
+                Some(cap) => println!("  total {} B of a {cap} B ceiling", session.total_bytes()),
+                None => println!("  total {} B (no --max-bytes: reported, not gated)", session.total_bytes()),
+            }
+            for cycle in &session.cycles {
+                println!(
+                    "  cycle: {}:{} imports {}, already being loaded above it (a no-op, not a failure)",
+                    show(&cycle.file),
+                    cycle.line,
+                    show(&cycle.target)
+                );
+            }
+            println!();
+        }
+    }
+
+    let files: usize = report.sessions.iter().map(|s| s.files.len()).sum();
+    if report.is_ok() {
+        eprintln!(
+            "skill-lint chain: all checks passed ({} session(s), {files} file load(s))",
+            report.sessions.len()
+        );
+    } else {
+        let errors: Vec<_> = report.errors().collect();
+        eprintln!("skill-lint chain: {} error(s):", errors.len());
+        for err in errors {
             eprintln!("  - {err}");
         }
         process::exit(1);

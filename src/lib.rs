@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod chain;
 pub mod check;
 pub mod claudemd;
 pub mod error;

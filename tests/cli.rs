@@ -905,3 +905,215 @@ fn workflows_round_trips_on_substrates_real_corpus() {
         .success()
         .stderr(predicate::str::contains("all checks passed"));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// chain — what one session actually loads
+// ═══════════════════════════════════════════════════════════════════
+
+/// A committed fixture's `home/`, canonical so it compares with what the tool
+/// reports. Each case under `tests/fixtures/chain/` is a whole `$HOME`, so the
+/// walk stops inside the fixture and never reads this repository's own
+/// `CLAUDE.md` or anything above it.
+fn chain_home(case: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/chain")
+        .join(case)
+        .join("home")
+        .canonicalize()
+        .unwrap()
+}
+
+/// Run `chain` over `case` with one `--dir` per entry of `dirs` (relative to
+/// the fixture's home).
+fn chain(case: &str, dirs: &[&str], extra: &[&str]) -> assert_cmd::assert::Assert {
+    let home = chain_home(case);
+    let mut args: Vec<String> = vec!["chain".into(), "--home".into(), home.display().to_string()];
+    for dir in dirs {
+        args.push("--dir".into());
+        args.push(home.join(dir).display().to_string());
+    }
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+    Command::cargo_bin("skill-lint").unwrap().args(&args).assert()
+}
+
+/// The `--json` report of a run, whatever its exit status.
+fn chain_json(case: &str, dirs: &[&str], extra: &[&str]) -> serde_json::Value {
+    let mut extra = extra.to_vec();
+    extra.push("--json");
+    let out = chain(case, dirs, &extra).get_output().stdout.clone();
+    serde_json::from_slice(&out).unwrap_or_else(|e| {
+        panic!("--json did not print JSON ({e}):\n{}", String::from_utf8_lossy(&out))
+    })
+}
+
+/// One session's loaded files as `(path relative to home, origin, imported_by
+/// relative to home, line, depth)`, in load order.
+fn loaded(json: &serde_json::Value, session: usize, home: &std::path::Path) -> Vec<(String, String, String, u64, u64)> {
+    let rel = |v: &serde_json::Value| {
+        v.as_str().map_or_else(String::new, |p| {
+            std::path::Path::new(p).strip_prefix(home).unwrap_or_else(|_| panic!("{p} is outside the fixture home")).display().to_string()
+        })
+    };
+    json["sessions"][session]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                rel(&f["path"]),
+                f["origin"].as_str().unwrap().to_owned(),
+                rel(&f["imported_by"]),
+                f["line"].as_u64().unwrap_or(0),
+                f["depth"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn paths(rows: &[(String, String, String, u64, u64)]) -> Vec<&str> {
+    rows.iter().map(|r| r.0.as_str()).collect()
+}
+
+/// RED. Global first, then every directory from home down to the session
+/// directory, root-most first, in each of its three spellings. A `CLAUDE.md`
+/// BELOW the session directory is never loaded at start-up.
+#[test]
+fn chain_loads_global_then_root_most_to_the_session_dir() {
+    let home = chain_home("order");
+    let json = chain_json("order", &["a/b/c"], &[]);
+    let rows = loaded(&json, 0, &home);
+    assert_eq!(
+        paths(&rows),
+        [
+            ".claude/CLAUDE.md",
+            "CLAUDE.md",
+            "a/CLAUDE.md",
+            "a/CLAUDE.local.md",
+            "a/b/.claude/CLAUDE.md",
+            "a/b/c/CLAUDE.md",
+        ]
+    );
+    assert_eq!(rows[0].1, "global");
+    assert!(rows[1..].iter().all(|r| r.1 == "chain"), "{rows:?}");
+
+    let total: u64 = rows.iter().map(|r| fs::metadata(home.join(&r.0)).unwrap().len()).sum();
+    assert_eq!(json["sessions"][0]["total_bytes"].as_u64(), Some(total));
+}
+
+/// A session started in `$HOME` finds `~/.claude/CLAUDE.md` twice — as the
+/// global file and as `$HOME`'s own `.claude/CLAUDE.md`. It is loaded, and
+/// counted, once. Each `--dir` is its own session with its own total.
+#[test]
+fn chain_loads_the_global_once_and_reports_each_dir_as_its_own_session() {
+    let home = chain_home("order");
+    let json = chain_json("order", &["", "a"], &[]);
+    assert_eq!(paths(&loaded(&json, 0, &home)), [".claude/CLAUDE.md", "CLAUDE.md"]);
+    assert_eq!(
+        paths(&loaded(&json, 1, &home)),
+        [".claude/CLAUDE.md", "CLAUDE.md", "a/CLAUDE.md", "a/CLAUDE.local.md"]
+    );
+}
+
+/// RED. Relative (`docs/x`, `./x`, `../x`) imports resolve against the
+/// IMPORTING file's directory, `~/` against home, recursively. A file reached
+/// twice (the diamond on `notes/shared.md` and `docs/dot.md`) loads once.
+#[test]
+fn chain_follows_relative_and_tilde_imports_recursively() {
+    let home = chain_home("imports");
+    let json = chain_json("imports", &["proj"], &[]);
+    let rows = loaded(&json, 0, &home);
+    let expected: Vec<(String, String, String, u64, u64)> = [
+        (".claude/CLAUDE.md", "global", "", 0, 0),
+        ("notes/shared.md", "import", ".claude/CLAUDE.md", 3, 1),
+        ("proj/CLAUDE.md", "chain", "", 0, 0),
+        ("proj/docs/rel.md", "import", "proj/CLAUDE.md", 3, 1),
+        ("proj/docs/sub/nested.md", "import", "proj/docs/rel.md", 3, 2),
+        ("proj/docs/dot.md", "import", "proj/docs/rel.md", 4, 2),
+    ]
+    .iter()
+    .map(|(p, o, b, l, d)| ((*p).to_owned(), (*o).to_owned(), (*b).to_owned(), *l, *d))
+    .collect();
+    assert_eq!(rows, expected);
+}
+
+/// An `@path` shown in a fence or an inline code span is an example, not an
+/// import; an address and a bare `@` are not paths. Were any of them read as
+/// imports, the `*-missing.md` targets would fail the run.
+#[test]
+fn chain_ignores_imports_in_code_fences_and_inline_code() {
+    chain("imports", &["proj"], &[])
+        .success()
+        .stdout(predicate::str::contains("missing").not())
+        .stderr(predicate::str::contains("all checks passed"));
+}
+
+/// A cycle costs nothing at load time — the second visit is a no-op — so it is
+/// reported, not failed.
+#[test]
+fn chain_reports_an_import_cycle_without_failing() {
+    let home = chain_home("cycle");
+    let json = chain_json("cycle", &["proj"], &[]);
+    assert_eq!(paths(&loaded(&json, 0, &home)), ["proj/CLAUDE.md", "proj/a.md", "proj/b.md"]);
+    let cycles = json["sessions"][0]["cycles"].as_array().unwrap();
+    assert_eq!(cycles.len(), 1, "{cycles:?}");
+    assert!(cycles[0]["file"].as_str().unwrap().ends_with("proj/b.md"));
+    assert!(cycles[0]["target"].as_str().unwrap().ends_with("proj/a.md"));
+    assert_eq!(cycles[0]["line"].as_u64(), Some(3));
+
+    chain("cycle", &["proj"], &[]).success().stdout(predicate::str::contains("cycle"));
+}
+
+/// RED. A dangling import is a silent no-op in Claude Code; here it is an
+/// error, and the file it sits in is still measured.
+#[test]
+fn chain_fails_on_a_missing_import_target() {
+    let home = chain_home("missing");
+    chain("missing", &["proj"], &[])
+        .failure()
+        .stderr(predicate::str::contains("[claudemd-chain]"))
+        .stderr(predicate::str::contains("CLAUDE.md:4 imports '@docs/gone.md'"));
+    let json = chain_json("missing", &["proj"], &[]);
+    assert_eq!(paths(&loaded(&json, 0, &home)), ["proj/CLAUDE.md", "proj/docs/present.md"]);
+    assert_eq!(json["ok"].as_bool(), Some(false));
+}
+
+/// Five hops load; the sixth is dropped by Claude Code without a word, so it
+/// fails here.
+#[test]
+fn chain_fails_on_an_import_past_the_hop_limit() {
+    let home = chain_home("deep");
+    let json = chain_json("deep", &["proj"], &[]);
+    let rows = loaded(&json, 0, &home);
+    assert_eq!(rows.last().map(|r| (r.0.as_str(), r.4)), Some(("proj/d5.md", 5)), "{rows:?}");
+    chain("deep", &["proj"], &[])
+        .failure()
+        .stderr(predicate::str::contains("'@d6.md'"))
+        .stderr(predicate::str::contains("5-hop"));
+}
+
+/// RED. A session that loads nothing is a vacuous pass, not a success.
+#[test]
+fn chain_refuses_a_session_that_loads_zero_files() {
+    chain("empty", &["proj"], &[])
+        .failure()
+        .stderr(predicate::str::contains("vacuous pass"));
+}
+
+#[test]
+fn chain_fails_on_a_dir_that_is_not_there() {
+    chain("order", &["no/such/dir"], &[]).failure();
+}
+
+/// RED. The ceilings are gates: over the total, or one file over its own.
+#[test]
+fn chain_fails_over_either_ceiling_and_passes_under_both() {
+    chain("order", &["a/b/c"], &["--max-bytes", "10"])
+        .failure()
+        .stderr(predicate::str::contains("over the 10 B --max-bytes ceiling"));
+    chain("order", &["a/b/c"], &["--max-file-bytes", "5"])
+        .failure()
+        .stderr(predicate::str::contains("over the 5 B --max-file-bytes ceiling"));
+    chain("order", &["a/b/c"], &["--max-bytes", "100000", "--max-file-bytes", "1000"])
+        .success()
+        .stderr(predicate::str::contains("all checks passed"));
+}
