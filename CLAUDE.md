@@ -13,8 +13,8 @@ Checks fall in two families, and the split decides what may gate CI.
 objective right answer a machine checks and a human fixes without asserting
 anything new about the world.
 
-`claudemd-entry` and `claudemd-file` are structural too, but they belong to the
-`claudemd` subcommand rather than to `check` — they lint `CLAUDE.md` files, not
+`claudemd-entry`, `claudemd-file` and `claudemd-chain` are structural too, but
+they belong to the `claudemd` and `chain` subcommands rather than to `check` — they lint `CLAUDE.md` files, not
 skills, and pretending a document is a skill directory would make the shared
 context's field names lie.
 
@@ -126,3 +126,54 @@ can no longer exercise this**. The fixtures in
 `claudemd_counts_a_star_prefixed_bullet_as_its_own_entry` are the only coverage
 there is; deleting them silently removes the only thing standing between this
 tool and the bug it was written to avoid repeating.
+
+## `chain` — what one session actually loads
+
+`claudemd` measures one file. Claude Code never loads one file: a session
+started in directory `D` reads the global `~/.claude/CLAUDE.md`, every
+`CLAUDE.md` from `$HOME` down to `D`, and every `@path` those files import,
+recursively. Nothing measured that sum, so it regrew in silence — ~130k chars
+for a session in `pleme-io/nix`, measured 2026-10-01.
+
+```
+skill-lint chain --dir ~/code/github/pleme-io/nix --dir ~ --max-bytes 150000
+```
+
+```
+session ~/code/github/pleme-io/nix — 11 file(s), 133339 B
+     33313 B  global  ~/.claude/CLAUDE.md
+      2046 B  chain   ~/CLAUDE.md
+       957 B  import    ~/code/github/pleme-io/nix/docs/knowledge/home/INDEX.md   <- ~/CLAUDE.md:58
+      ...
+     21204 B  chain   ~/code/github/pleme-io/nix/CLAUDE.md
+     17498 B  import    ~/code/github/pleme-io/nix/docs/knowledge/nix/INDEX.md   <- ~/code/github/pleme-io/nix/CLAUDE.md:182
+  total 133339 B of a 150000 B ceiling
+```
+
+**Load order.** `--global` (default `<home>/.claude/CLAUDE.md`), then, root-most
+first, each directory's `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`,
+each file followed depth-first by what it imports. A file reached twice loads
+once (keyed on its canonical path), so `~/.claude/CLAUDE.md` is not counted
+again in a session started in `$HOME`.
+
+**Imports.** `@path` at line start or after whitespace, in prose. `~/` resolves
+against `--home`, an absolute path stands, anything else resolves against the
+IMPORTING file's directory; `#fragment` is dropped. Inside a fence or an inline
+code span it is an example, not an import.
+
+**What fails.** A total over `--max-bytes`; a file over `--max-file-bytes`; an
+import whose target is not a file (Claude Code skips it without a word, so a
+dangling import looks exactly like a working one); an import past the 5-hop
+limit (dropped the same way); a session that loads zero files (a vacuous
+pass). Without the two ceilings the sizes are reported, not gated. A cycle is
+reported and never fails: the second visit costs nothing.
+
+**What it does not model.** Indented code blocks and HTML comments (an `@path`
+there is read as an import — loud, never silently uncounted); directories
+above `$HOME` (Claude Code walks to `/`; the walk stops at `--home` so fixtures
+stay hermetic); import approval and file-type filters (every import counts, so
+the total is a ceiling); `.claude/rules/`.
+
+`--json` prints the same report as one JSON document: per session, `dir`,
+`total_bytes`, the ceilings, `files` (`path`, `bytes`, `depth`, `origin` —
+`global` / `chain` / `import` — `imported_by`, `line`), `cycles` and `errors`.
