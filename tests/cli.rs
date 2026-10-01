@@ -383,6 +383,63 @@ fn budget_without_strict_reports_and_exits_zero() {
         .stdout(predicate::str::contains("entries OVER"));
 }
 
+fn skill_with_body(dir: &std::path::Path, name: &str, body_bytes: usize) {
+    let skill_dir = dir.join(name);
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: short\n---\n{}", "b".repeat(body_bytes)),
+    )
+    .unwrap();
+}
+
+fn body_cap_home() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    skill_with_body(dir.path(), "hefty", 2_000);
+    skill_with_body(dir.path(), "slim", 100);
+    dir
+}
+
+#[test]
+fn budget_max_body_bytes_reports_the_oversized_skill_and_exits_zero() {
+    let dir = body_cap_home();
+
+    budget(dir.path(), &["--budget-chars", "100000", "--max-body-bytes", "1000"])
+        .success()
+        .stdout(predicate::str::contains("SKILL.md body cap (1000 bytes): 1 OVER"))
+        .stdout(predicate::str::contains("2039 bytes  hefty"))
+        .stdout(predicate::str::contains("bytes  slim").not());
+}
+
+#[test]
+fn budget_strict_fails_when_a_skill_md_is_past_the_body_cap() {
+    let dir = body_cap_home();
+
+    budget(dir.path(), &["--budget-chars", "100000", "--max-body-bytes", "1000", "--strict"])
+        .failure()
+        .stderr(predicate::str::contains("'hefty' SKILL.md is 2039 bytes, past the 1000-byte body cap by 1039"))
+        .stderr(predicate::str::contains("'slim'").not());
+}
+
+#[test]
+fn budget_strict_passes_when_every_skill_md_is_under_the_body_cap() {
+    let dir = body_cap_home();
+
+    budget(dir.path(), &["--budget-chars", "100000", "--max-body-bytes", "5000", "--strict"])
+        .success()
+        .stdout(predicate::str::contains("SKILL.md body cap (5000 bytes): all 2 fit, largest 2039 bytes (hefty)"));
+}
+
+#[test]
+fn budget_without_max_body_bytes_has_no_body_finding() {
+    let dir = body_cap_home();
+
+    budget(dir.path(), &["--budget-chars", "100000", "--strict"])
+        .success()
+        .stdout(predicate::str::contains("body cap").not())
+        .stderr(predicate::str::contains("body cap").not());
+}
+
 /// A skill home holding one parseable skill, one whose `description` carries
 /// an unquoted `': '`, and one with no `description` at all.
 fn unparseable_home() -> std::path::PathBuf {

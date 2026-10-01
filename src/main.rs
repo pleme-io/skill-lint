@@ -52,14 +52,19 @@ enum Command {
         #[arg(long, default_value_t = skill_lint::budget::DEFAULT_MAX_DESC_CHARS)]
         max_desc_chars: usize,
 
+        /// Ceiling on a whole `SKILL.md` in bytes, frontmatter included: an
+        /// invoked skill loads the entire file. Off when absent.
+        #[arg(long)]
+        max_body_bytes: Option<usize>,
+
         /// Show this many largest entries.
         #[arg(long, default_value_t = 20)]
         top: usize,
 
         /// Exit non-zero when the listing is over budget, any entry is past
-        /// `--max-desc-chars`, or any `SKILL.md` is unreadable, unparseable or
-        /// description-less, for use as a gate. Without it the run is a
-        /// report and exits 0 either way.
+        /// `--max-desc-chars`, any `SKILL.md` is past `--max-body-bytes`, or
+        /// any `SKILL.md` is unreadable, unparseable or description-less, for
+        /// use as a gate. Without it the run is a report and exits 0 either way.
         #[arg(long)]
         strict: bool,
     },
@@ -384,6 +389,7 @@ fn main() -> Result<()> {
             budget_fraction,
             budget_chars,
             max_desc_chars,
+            max_body_bytes,
             top,
             strict,
         } => run_budget(BudgetArgs {
@@ -393,6 +399,7 @@ fn main() -> Result<()> {
             budget_fraction,
             budget_chars,
             max_desc_chars,
+            max_body_bytes,
             top,
             strict,
         }),
@@ -810,6 +817,7 @@ struct BudgetArgs {
     budget_fraction: f64,
     budget_chars: Option<usize>,
     max_desc_chars: usize,
+    max_body_bytes: Option<usize>,
     top: usize,
     strict: bool,
 }
@@ -825,6 +833,7 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
         budget_fraction,
         budget_chars,
         max_desc_chars,
+        max_body_bytes,
         top,
         strict,
     } = args;
@@ -887,6 +896,10 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
         println!("  {:6}  {}", e.listing_chars, e.name);
     }
 
+    if let Some(cap) = max_body_bytes {
+        print_body_cap(&report, cap);
+    }
+
     if report.findings.is_empty() {
         println!("\nevery SKILL.md parsed with a description");
     } else {
@@ -900,7 +913,7 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
     }
 
     if strict {
-        let failures = strict_failures(&report);
+        let failures = strict_failures(&report, max_body_bytes);
         if !failures.is_empty() {
             eprintln!("\nskill-lint budget --strict: {} failure(s):", failures.len());
             for failure in &failures {
@@ -908,8 +921,9 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
             }
             process::exit(1);
         }
+        let body = max_body_bytes.map(|cap| format!(", every SKILL.md under {cap} bytes")).unwrap_or_default();
         eprintln!(
-            "skill-lint budget --strict: within budget, every entry under the per-entry cap, every SKILL.md parsed"
+            "skill-lint budget --strict: within budget, every entry under the per-entry cap, every SKILL.md parsed{body}"
         );
     }
     Ok(())
@@ -925,7 +939,7 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
 /// A third: a `SKILL.md` the scan could not read, parse, or find a description
 /// in. Skipped, it vanishes from both totals above, so the gate would pass a
 /// corpus it never read — every finding is therefore a failure here.
-fn strict_failures(report: &skill_lint::budget::BudgetReport) -> Vec<String> {
+fn strict_failures(report: &skill_lint::budget::BudgetReport, max_body_bytes: Option<usize>) -> Vec<String> {
     let mut failures = Vec::new();
     if report.over_budget() {
         failures.push(format!(
@@ -936,14 +950,47 @@ fn strict_failures(report: &skill_lint::budget::BudgetReport) -> Vec<String> {
         ));
     }
     for entry in report.truncated() {
-        failures.extend(report.findings.iter().map(ToString::to_string));
-    failures.push(format!(
+        failures.push(format!(
             "'{}' description is {} chars, past the {}-char per-entry cap by {} — the platform discards the rest",
             entry.name, entry.desc_chars, report.max_desc_chars, entry.truncated_chars
         ));
     }
+    if let Some(cap) = max_body_bytes {
+        for entry in report.over_body_cap(cap) {
+            failures.push(format!(
+                "'{}' SKILL.md is {} bytes, past the {cap}-byte body cap by {} — loaded whole on every invocation",
+                entry.name,
+                entry.body_bytes,
+                entry.body_bytes - cap
+            ));
+        }
+    }
     failures.extend(report.findings.iter().map(ToString::to_string));
     failures
+}
+
+fn print_body_cap(report: &skill_lint::budget::BudgetReport, cap: usize) {
+    let over = report.over_body_cap(cap);
+    if over.is_empty() {
+        match report.largest_body() {
+            Some(largest) => println!(
+                "\nSKILL.md body cap ({cap} bytes): all {} fit, largest {} bytes ({})",
+                report.entries.len(),
+                largest.body_bytes,
+                largest.name
+            ),
+            None => println!("\nSKILL.md body cap ({cap} bytes): no skills scanned"),
+        }
+        return;
+    }
+    println!(
+        "\nSKILL.md body cap ({cap} bytes): {} OVER, {} bytes past the cap in total",
+        over.len(),
+        over.iter().map(|e| e.body_bytes - cap).sum::<usize>()
+    );
+    for e in &over {
+        println!("  {:7} bytes  {}  (+{})", e.body_bytes, e.name, e.body_bytes - cap);
+    }
 }
 
 /// The `workflows` subcommand.

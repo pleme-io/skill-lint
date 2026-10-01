@@ -59,6 +59,7 @@ pub struct Entry {
     pub listing_chars: usize,
     /// Characters past the per-entry cap that the platform silently discards.
     pub truncated_chars: usize,
+    pub body_bytes: usize,
 }
 
 /// Why a `SKILL.md` under a scanned home did not contribute a described entry.
@@ -146,6 +147,18 @@ impl BudgetReport {
     pub fn total_truncated_chars(&self) -> usize {
         self.entries.iter().map(|e| e.truncated_chars).sum()
     }
+
+    #[must_use]
+    pub fn over_body_cap(&self, max_body_bytes: usize) -> Vec<&Entry> {
+        let mut over: Vec<&Entry> = self.entries.iter().filter(|e| e.body_bytes > max_body_bytes).collect();
+        over.sort_by(|a, b| b.body_bytes.cmp(&a.body_bytes).then(a.name.cmp(&b.name)));
+        over
+    }
+
+    #[must_use]
+    pub fn largest_body(&self) -> Option<&Entry> {
+        self.entries.iter().max_by(|a, b| a.body_bytes.cmp(&b.body_bytes).then(b.name.cmp(&a.name)))
+    }
 }
 
 /// Compute the listing budget over one or more skill homes.
@@ -214,6 +227,7 @@ pub fn compute(
                     home: home.display().to_string(),
                     desc_chars,
                     truncated_chars,
+                    body_bytes: content.len(),
                 },
             );
         }
@@ -283,6 +297,7 @@ mod tests {
             desc_chars: 3000,
             listing_chars: 1536 + 1 + 4,
             truncated_chars: 3000 - 1536,
+            body_bytes: 0,
         };
         assert_eq!(e.truncated_chars, 1464);
         assert!(e.listing_chars < e.desc_chars);
@@ -291,8 +306,9 @@ mod tests {
     #[test]
     fn report_arithmetic() {
         let entries = vec![
-            Entry { name: "a".into(), home: "h".into(), desc_chars: 100, listing_chars: 105, truncated_chars: 0 },
-            Entry { name: "b".into(), home: "h".into(), desc_chars: 2000, listing_chars: 1541, truncated_chars: 464 },
+            Entry { name: "a".into(), home: "h".into(), desc_chars: 100, listing_chars: 105, truncated_chars: 0, body_bytes: 500 },
+            Entry { name: "b".into(), home: "h".into(), desc_chars: 2000, listing_chars: 1541, truncated_chars: 464, body_bytes: 9000 },
+            Entry { name: "c".into(), home: "h".into(), desc_chars: 10, listing_chars: 15, truncated_chars: 0, body_bytes: 12_001 },
         ];
         let r = BudgetReport {
             total_listing_chars: entries.iter().map(|e| e.listing_chars).sum(),
@@ -303,9 +319,25 @@ mod tests {
             findings: vec![],
         };
         assert!(r.over_budget());
-        assert_eq!(r.overage_chars(), 646);
+        assert_eq!(r.overage_chars(), 661);
         assert_eq!(r.truncated().len(), 1);
         assert_eq!(r.total_truncated_chars(), 464);
+        let over: Vec<&str> = r.over_body_cap(1000).iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(over, ["c", "b"]);
+        assert!(r.over_body_cap(12_001).is_empty());
+        assert_eq!(r.largest_body().map(|e| e.name.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn body_bytes_is_the_whole_skill_md_frontmatter_included() {
+        let home = tempfile::TempDir::new().unwrap();
+        let text = "---\nname: whole\ndescription: counted\n---\n\n# Body\n";
+        std::fs::create_dir_all(home.path().join("whole")).unwrap();
+        std::fs::write(home.path().join("whole").join("SKILL.md"), text).unwrap();
+
+        let r = compute(&[home.path().to_path_buf()], 100_000, DEFAULT_MAX_DESC_CHARS).unwrap();
+
+        assert_eq!(r.entries[0].body_bytes, text.len());
     }
 
     #[test]
