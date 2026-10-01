@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "ecf8f43f48fa10bf756afa5378a8c1933703685b2bd2eb33ffe0f48449684567",
+  "cargo_lock_sha256": "115be761b295a685a47086a18ca7cf3deb3f4136e406fe72763e98bd72e7a437",
   "manifest_sha256": {
-    "Cargo.toml": "c939d77c1e60d93ee23a1458532974a4a870a95e124c3e87c2c2b76f5fd7369b"
+    "Cargo.toml": "5619ade3d4294a85d52abcffd43dbd7c2e966423bedaf969dd00c37545e224da"
   },
   "target_resolves": {
     "base": {
@@ -208,7 +208,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "bitflags-2.13.1": {
+      "bitflags-2.13.2": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
@@ -248,16 +248,16 @@
           "unicode"
         ]
       },
-      "cfg-if-1.0.4": {
+      "cfg-if-1.0.5": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
-      "clap-4.6.6": {
+      "clap-4.6.7": {
         "runtime_dependencies": [
           {
             "name": "clap_builder",
-            "package_key": "clap_builder-4.6.6",
+            "package_key": "clap_builder-4.6.7",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -267,7 +267,7 @@
           },
           {
             "name": "clap_derive",
-            "package_key": "clap_derive-4.6.4",
+            "package_key": "clap_derive-4.6.7",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -288,7 +288,7 @@
           "usage"
         ]
       },
-      "clap_builder-4.6.6": {
+      "clap_builder-4.6.7": {
         "runtime_dependencies": [
           {
             "name": "anstream",
@@ -312,7 +312,7 @@
           },
           {
             "name": "clap_lex",
-            "package_key": "clap_lex-1.1.0",
+            "package_key": "clap_lex-1.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -341,7 +341,7 @@
           "usage"
         ]
       },
-      "clap_derive-4.6.4": {
+      "clap_derive-4.6.7": {
         "runtime_dependencies": [
           {
             "name": "heck",
@@ -375,7 +375,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.4",
+            "package_key": "syn-3.0.6",
             "kind": "normal",
             "features": [
               "full"
@@ -391,7 +391,7 @@
           "default"
         ]
       },
-      "clap_lex-1.1.0": {
+      "clap_lex-1.1.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -482,7 +482,7 @@
         "runtime_dependencies": [
           {
             "name": "cfg_if",
-            "package_key": "cfg-if-1.0.4",
+            "package_key": "cfg-if-1.0.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -584,7 +584,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "indexmap-2.14.1": {
+      "indexmap-2.14.2": {
         "runtime_dependencies": [
           {
             "name": "equivalent",
@@ -779,7 +779,7 @@
         "runtime_dependencies": [
           {
             "name": "unicode_ident",
-            "package_key": "unicode-ident-1.0.24",
+            "package_key": "unicode-ident-1.0.26",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1033,7 +1033,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.4",
+            "package_key": "syn-3.0.6",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1106,7 +1106,7 @@
         "runtime_dependencies": [
           {
             "name": "indexmap",
-            "package_key": "indexmap-2.14.1",
+            "package_key": "indexmap-2.14.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1158,7 +1158,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "skill-lint-0.1.5": {
+      "skill-lint-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1172,7 +1172,7 @@
           },
           {
             "name": "clap",
-            "package_key": "clap-4.6.6",
+            "package_key": "clap-4.6.7",
             "kind": "normal",
             "features": [
               "derive"
@@ -1216,7 +1216,7 @@
           },
           {
             "name": "thiserror",
-            "package_key": "thiserror-2.0.20",
+            "package_key": "thiserror-2.0.21",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1233,7 +1233,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "syn-3.0.4": {
+      "syn-3.0.6": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1257,7 +1257,7 @@
           },
           {
             "name": "unicode_ident",
-            "package_key": "unicode-ident-1.0.24",
+            "package_key": "unicode-ident-1.0.26",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1313,7 +1313,7 @@
           },
           {
             "name": "rustix",
-            "package_key": "rustix-1.1.4",
+            "package_key": "rustix-1.1.5",
             "kind": "normal",
             "features": [
               "fs"
@@ -1335,11 +1335,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "thiserror-2.0.20": {
+      "thiserror-2.0.21": {
         "runtime_dependencies": [
           {
             "name": "thiserror_impl",
-            "package_key": "thiserror-impl-2.0.20",
+            "package_key": "thiserror-impl-2.0.21",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1354,7 +1354,7 @@
           "std"
         ]
       },
-      "thiserror-impl-2.0.20": {
+      "thiserror-impl-2.0.21": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1378,7 +1378,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.4",
+            "package_key": "syn-3.0.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1390,7 +1390,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "unicode-ident-1.0.24": {
+      "unicode-ident-1.0.26": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -1432,11 +1432,11 @@
     "targets": {
       "aarch64-apple-darwin": {
         "overrides": {
-          "rustix-1.1.4": {
+          "rustix-1.1.5": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
-                "package_key": "bitflags-2.13.1",
+                "package_key": "bitflags-2.13.2",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -1519,11 +1519,11 @@
               "no_std"
             ]
           },
-          "rustix-1.1.4": {
+          "rustix-1.1.5": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
-                "package_key": "bitflags-2.13.1",
+                "package_key": "bitflags-2.13.2",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -1637,11 +1637,11 @@
               "no_std"
             ]
           },
-          "rustix-1.1.4": {
+          "rustix-1.1.5": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
-                "package_key": "bitflags-2.13.1",
+                "package_key": "bitflags-2.13.2",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -1743,11 +1743,11 @@
       },
       "x86_64-apple-darwin": {
         "overrides": {
-          "rustix-1.1.4": {
+          "rustix-1.1.5": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
-                "package_key": "bitflags-2.13.1",
+                "package_key": "bitflags-2.13.2",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -1830,11 +1830,11 @@
               "no_std"
             ]
           },
-          "rustix-1.1.4": {
+          "rustix-1.1.5": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
-                "package_key": "bitflags-2.13.1",
+                "package_key": "bitflags-2.13.2",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -1948,11 +1948,11 @@
               "no_std"
             ]
           },
-          "rustix-1.1.4": {
+          "rustix-1.1.5": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
-                "package_key": "bitflags-2.13.1",
+                "package_key": "bitflags-2.13.2",
                 "kind": "normal",
                 "features": [],
                 "uses_default_features": false,
@@ -2087,16 +2087,16 @@
     "autocfg-1.5.1": {
       "edition": "2015"
     },
-    "bitflags-2.13.1": {
+    "bitflags-2.13.2": {
       "edition": "2021"
     },
     "bstr-1.13.1": {
       "edition": "2021"
     },
-    "cfg-if-1.0.4": {
+    "cfg-if-1.0.5": {
       "edition": "2018"
     },
-    "clap-4.6.6": {
+    "clap-4.6.7": {
       "edition": "2024",
       "binaries": [
         {
@@ -2105,14 +2105,14 @@
         }
       ]
     },
-    "clap_builder-4.6.6": {
+    "clap_builder-4.6.7": {
       "edition": "2024"
     },
-    "clap_derive-4.6.4": {
+    "clap_derive-4.6.7": {
       "edition": "2024",
       "proc_macro": true
     },
-    "clap_lex-1.1.0": {
+    "clap_lex-1.1.1": {
       "edition": "2024"
     },
     "colorchoice-1.0.5": {
@@ -2143,7 +2143,7 @@
     "heck-0.5.0": {
       "edition": "2021"
     },
-    "indexmap-2.14.1": {
+    "indexmap-2.14.2": {
       "edition": "2024"
     },
     "is_terminal_polyfill-1.70.2": {
@@ -2198,7 +2198,7 @@
     "regex-syntax-0.8.11": {
       "edition": "2021"
     },
-    "rustix-1.1.4": {
+    "rustix-1.1.5": {
       "edition": "2021",
       "build_script": "build.rs"
     },
@@ -2224,7 +2224,7 @@
     "serde_yaml_ng-0.10.0": {
       "edition": "2021"
     },
-    "skill-lint-0.1.5": {
+    "skill-lint-0.1.6": {
       "edition": "2024",
       "lib_target": {
         "name": "skill_lint",
@@ -2240,7 +2240,7 @@
     "strsim-0.11.1": {
       "edition": "2015"
     },
-    "syn-3.0.4": {
+    "syn-3.0.6": {
       "edition": "2021"
     },
     "tempfile-3.27.0": {
@@ -2249,15 +2249,15 @@
     "termtree-0.5.1": {
       "edition": "2021"
     },
-    "thiserror-2.0.20": {
+    "thiserror-2.0.21": {
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "thiserror-impl-2.0.20": {
+    "thiserror-impl-2.0.21": {
       "edition": "2021",
       "proc_macro": true
     },
-    "unicode-ident-1.0.24": {
+    "unicode-ident-1.0.26": {
       "edition": "2021"
     },
     "unsafe-libyaml-0.2.11": {
