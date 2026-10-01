@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use skill_lint::check::{self, CheckConfig};
+use skill_lint::claudemd::ClaudeMdConfig;
 
 #[derive(Parser)]
 #[command(name = "skill-lint", about = "Validate Claude Code skill maps")]
@@ -331,98 +332,13 @@ fn main() -> Result<()> {
             baseline,
             write_baseline,
             top,
-        } => {
-            use skill_lint::claudemd::{Baseline, ClaudeMdConfig, FsDocSource};
-
-            let config = ClaudeMdConfig { max_entry_bytes, max_file_bytes, index_heading };
-            let known = match baseline.as_deref() {
-                Some(path) => Baseline::load(path)?,
-                None => Baseline::default(),
-            };
-
-            let source = FsDocSource { paths: &files };
-            let report = skill_lint::claudemd::lint_all(&source, &config, known)
-                .context("linting CLAUDE.md files")?;
-
-            // Coverage is part of the gate: what was scanned is stated before
-            // any verdict, so a green run over the wrong file set is visible
-            // rather than merely green.
-            println!("scanned {} file(s):", report.scans.len());
-            for scan in &report.scans {
-                match &scan.section {
-                    Some(section) => println!(
-                        "  {:<40} {:>8} B   index {:?}: {} entries",
-                        scan.key,
-                        scan.bytes,
-                        section.heading.trim(),
-                        section.entries.len()
-                    ),
-                    None => println!(
-                        "  {:<40} {:>8} B   no index section matching {:?}",
-                        scan.key, scan.bytes, config.index_heading
-                    ),
-                }
-            }
-
-            let entries = report.entry_count();
-            println!(
-                "\nindex entries: {entries} across {} file(s) — {} over the {} B ceiling",
-                report.scans.len(),
-                report.over_ceiling(),
-                config.max_entry_bytes
-            );
-            if let Some(median) = report.median_entry_bytes() {
-                let largest = report.entries_by_size();
-                println!(
-                    "  median {median} B, max {} B, total {} B",
-                    largest.first().map_or(0, |e| e.bytes),
-                    largest.iter().map(|e| e.bytes).sum::<usize>()
-                );
-                println!("  largest {top}:");
-                for entry in largest.iter().take(top) {
-                    let over = entry.bytes.saturating_sub(config.max_entry_bytes);
-                    println!("    {:>6} B  (+{:>5})  {}", entry.bytes, over, entry.key);
-                }
-            }
-
-            let census = report.census();
-            println!("\ndirective census (a load signal, not a verdict):");
-            println!("  skip-* waivers      {:>5}   {}", census.skip_total(), top_names(&census.skips));
-            println!("  pending-* markers   {:>5}   {}", census.pending_total(), top_names(census.pendings()));
-            println!(
-                "  imperative lines    {:>5}   {}",
-                census.imperative_lines,
-                top_names(&census.imperatives)
-            );
-            println!("  \" never \" in prose  {:>5}", census.never_lowercase);
-
-            if let Some(path) = write_baseline.as_deref() {
-                let text = Baseline::render(&report.scans, &config);
-                std::fs::write(path, &text)
-                    .with_context(|| format!("writing baseline {}", path.display()))?;
-                println!(
-                    "\nwrote baseline {} ({} recorded item(s))",
-                    path.display(),
-                    text.lines().filter(|l| !l.starts_with('#')).count()
-                );
-                return Ok(());
-            }
-
-            if report.is_ok() {
-                eprintln!(
-                    "skill-lint claudemd: all checks passed ({} file(s), {entries} index entries)",
-                    report.scans.len()
-                );
-            } else {
-                eprintln!("\nskill-lint claudemd: {} error(s):", report.errors.len());
-                for err in &report.errors {
-                    eprintln!("  - {err}");
-                }
-                process::exit(1);
-            }
-
-            Ok(())
-        }
+        } => run_claudemd(
+            &files,
+            &ClaudeMdConfig { max_entry_bytes, max_file_bytes, index_heading },
+            baseline.as_deref(),
+            write_baseline.as_deref(),
+            top,
+        ),
 
         Command::Workflows { files, max_run_lines, baseline, write_baseline, top } => {
             run_workflows(&files, max_run_lines, baseline.as_deref(), write_baseline.as_deref(), top)
@@ -432,6 +348,109 @@ fn main() -> Result<()> {
             run_chain(&dirs, home, global, max_bytes, max_file_bytes, json)
         }
     }
+}
+
+/// The `claudemd` subcommand.
+///
+/// Every subcommand body lives in its own `run_*` function and `main` only
+/// dispatches. Inline arms are what held `main` over `clippy::too_many_lines`
+/// (202 lines at worst); with this one moved out it is under the limit.
+fn run_claudemd(
+    files: &[PathBuf],
+    config: &ClaudeMdConfig,
+    baseline: Option<&std::path::Path>,
+    write_baseline: Option<&std::path::Path>,
+    top: usize,
+) -> Result<()> {
+    use skill_lint::claudemd::{Baseline, FsDocSource};
+
+    let known = match baseline {
+        Some(path) => Baseline::load(path)?,
+        None => Baseline::default(),
+    };
+
+    let source = FsDocSource { paths: files };
+    let report = skill_lint::claudemd::lint_all(&source, config, known)
+        .context("linting CLAUDE.md files")?;
+
+    // Coverage is part of the gate: what was scanned is stated before
+    // any verdict, so a green run over the wrong file set is visible
+    // rather than merely green.
+    println!("scanned {} file(s):", report.scans.len());
+    for scan in &report.scans {
+        match &scan.section {
+            Some(section) => println!(
+                "  {:<40} {:>8} B   index {:?}: {} entries",
+                scan.key,
+                scan.bytes,
+                section.heading.trim(),
+                section.entries.len()
+            ),
+            None => println!(
+                "  {:<40} {:>8} B   no index section matching {:?}",
+                scan.key, scan.bytes, config.index_heading
+            ),
+        }
+    }
+
+    let entries = report.entry_count();
+    println!(
+        "\nindex entries: {entries} across {} file(s) — {} over the {} B ceiling",
+        report.scans.len(),
+        report.over_ceiling(),
+        config.max_entry_bytes
+    );
+    if let Some(median) = report.median_entry_bytes() {
+        let largest = report.entries_by_size();
+        println!(
+            "  median {median} B, max {} B, total {} B",
+            largest.first().map_or(0, |e| e.bytes),
+            largest.iter().map(|e| e.bytes).sum::<usize>()
+        );
+        println!("  largest {top}:");
+        for entry in largest.iter().take(top) {
+            let over = entry.bytes.saturating_sub(config.max_entry_bytes);
+            println!("    {:>6} B  (+{:>5})  {}", entry.bytes, over, entry.key);
+        }
+    }
+
+    let census = report.census();
+    println!("\ndirective census (a load signal, not a verdict):");
+    println!("  skip-* waivers      {:>5}   {}", census.skip_total(), top_names(&census.skips));
+    println!("  pending-* markers   {:>5}   {}", census.pending_total(), top_names(census.pendings()));
+    println!(
+        "  imperative lines    {:>5}   {}",
+        census.imperative_lines,
+        top_names(&census.imperatives)
+    );
+    println!("  \" never \" in prose  {:>5}", census.never_lowercase);
+
+    if let Some(path) = write_baseline {
+        let text = Baseline::render(&report.scans, config);
+        std::fs::write(path, &text)
+            .with_context(|| format!("writing baseline {}", path.display()))?;
+        println!(
+            "\nwrote baseline {} ({} recorded item(s))",
+            path.display(),
+            text.lines().filter(|l| !l.starts_with('#')).count()
+        );
+        return Ok(());
+    }
+
+    if report.is_ok() {
+        eprintln!(
+            "skill-lint claudemd: all checks passed ({} file(s), {entries} index entries)",
+            report.scans.len()
+        );
+    } else {
+        eprintln!("\nskill-lint claudemd: {} error(s):", report.errors.len());
+        for err in &report.errors {
+            eprintln!("  - {err}");
+        }
+        process::exit(1);
+    }
+
+    Ok(())
 }
 
 /// Arguments of the `budget` subcommand, bundled so the arm in `main` stays a
@@ -449,9 +468,7 @@ struct BudgetArgs {
 
 /// The `budget` subcommand.
 ///
-/// Its own function for the reason `run_workflows` is: `main`'s match already
-/// trips `clippy::too_many_lines`, and moving a whole arm out is how that debt
-/// shrinks instead of growing with every subcommand.
+/// Its own function so `main` stays a dispatch; see [`run_claudemd`].
 fn run_budget(args: BudgetArgs) -> Result<()> {
     let BudgetArgs {
         skills_dir,
@@ -563,9 +580,7 @@ fn strict_failures(report: &skill_lint::budget::BudgetReport) -> Vec<String> {
 
 /// The `workflows` subcommand.
 ///
-/// Its own function rather than a fourth arm inline: `main`'s match already trips
-/// `clippy::too_many_lines` at 199 lines, and a subcommand that pushed it to 281
-/// would be adding to debt it did not create.
+/// Its own function so `main` stays a dispatch; see [`run_claudemd`].
 fn run_workflows(
     files: &[PathBuf],
     max_run_lines: usize,
