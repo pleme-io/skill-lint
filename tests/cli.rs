@@ -317,6 +317,73 @@ fn real_skills_carry_no_error_class_other_than_path_resolution() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// budget --strict — the listing budget as a gate
+// ═══════════════════════════════════════════════════════════════════
+
+/// A skill home holding one skill whose description is `desc_chars` long.
+fn skill_with_description(dir: &std::path::Path, name: &str, desc_chars: usize) {
+    let skill_dir = dir.join(name);
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {}\n---\n\n# Body\n", "d".repeat(desc_chars)),
+    )
+    .unwrap();
+}
+
+fn budget(dir: &std::path::Path, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let mut args = vec!["budget", "--skills-dir", dir.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    Command::cargo_bin("skill-lint").unwrap().args(&args).assert()
+}
+
+/// RED. `--strict` gated the TOTAL only, so a description the platform cuts
+/// in half — trigger phrases and all — passed the gate as long as the listing
+/// as a whole fit. The report printed "entries OVER" and exited 0.
+#[test]
+fn budget_strict_fails_when_one_entry_is_past_the_per_entry_cap() {
+    let dir = TempDir::new().unwrap();
+    skill_with_description(dir.path(), "wordy", 50);
+
+    budget(dir.path(), &["--max-desc-chars", "10", "--budget-chars", "100000", "--strict"])
+        .failure()
+        .stderr(predicate::str::contains("past the 10-char per-entry cap"));
+}
+
+#[test]
+fn budget_strict_fails_when_the_listing_is_over_budget() {
+    let dir = TempDir::new().unwrap();
+    skill_with_description(dir.path(), "big", 500);
+
+    budget(dir.path(), &["--budget-chars", "100", "--strict"])
+        .failure()
+        .stderr(predicate::str::contains("over the 100-char listing budget"));
+}
+
+#[test]
+fn budget_strict_passes_when_everything_fits() {
+    let dir = TempDir::new().unwrap();
+    skill_with_description(dir.path(), "small", 20);
+
+    budget(dir.path(), &["--max-desc-chars", "100", "--budget-chars", "100000", "--strict"]).success();
+}
+
+/// The default is a report, not a gate — unchanged by `--strict` learning a
+/// second failure condition.
+#[test]
+fn budget_without_strict_reports_and_exits_zero() {
+    let dir = TempDir::new().unwrap();
+    skill_with_description(dir.path(), "wordy", 500);
+
+    // The listing counts the capped prefix (10 + name + separators = 19), so a
+    // 5-char budget is over on the total as well as on the entry.
+    budget(dir.path(), &["--max-desc-chars", "10", "--budget-chars", "5"])
+        .success()
+        .stdout(predicate::str::contains("OVER BUDGET"))
+        .stdout(predicate::str::contains("entries OVER"));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // claudemd — the anti-regrowth seal
 // ═══════════════════════════════════════════════════════════════════
 

@@ -55,7 +55,9 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         top: usize,
 
-        /// Exit non-zero when over budget, for use as a gate.
+        /// Exit non-zero when the listing is over budget OR any entry is past
+        /// `--max-desc-chars`, for use as a gate. Without it the run is a
+        /// report and exits 0 either way.
         #[arg(long)]
         strict: bool,
     },
@@ -223,70 +225,16 @@ fn main() -> Result<()> {
             max_desc_chars,
             top,
             strict,
-        } => {
-            let homes = if let Some(root) = discover_under.as_deref() {
-                skill_lint::budget::discover_homes(root)
-            } else if skills_dir.is_empty() {
-                vec![PathBuf::from(".")]
-            } else {
-                skills_dir
-            };
-
-            let budget = budget_chars
-                .unwrap_or_else(|| skill_lint::budget::budget_from_window(window_tokens, budget_fraction));
-
-            let report = skill_lint::budget::compute(&homes, budget, max_desc_chars)
-                .context("computing skill-listing budget")?;
-
-            println!("homes scanned ({}):", report.homes.len());
-            for h in &report.homes {
-                println!("  {h}");
-            }
-            println!("\nskills:            {}", report.entries.len());
-            println!("listing chars:     {}", report.total_listing_chars);
-            println!("budget chars:      {}  (estimated from a {window_tokens}-token window at {budget_fraction}; chars/token is approximate)", report.budget_chars);
-
-            if report.over_budget() {
-                println!(
-                    "OVER BUDGET by {} chars ({:.1}x)",
-                    report.overage_chars(),
-                    report.ratio()
-                );
-                println!(
-                    "  On overflow the platform drops descriptions starting with the skills you\n  \
-                     invoke LEAST. This tool cannot know that order — invocation counts are not on\n  \
-                     disk — so it does not guess which entries go. Run /context for the real\n  \
-                     post-budget size."
-                );
-            } else {
-                println!("within budget ({} chars to spare)", report.budget_chars - report.total_listing_chars);
-            }
-
-            let truncated = report.truncated();
-            if truncated.is_empty() {
-                println!("\nper-entry cap ({}): all entries fit", report.max_desc_chars);
-            } else {
-                println!(
-                    "\nper-entry cap ({}): {} entries OVER, discarding {} chars outright",
-                    report.max_desc_chars,
-                    truncated.len(),
-                    report.total_truncated_chars()
-                );
-                for e in &truncated {
-                    println!("  {:6} over  {}", e.truncated_chars, e.name);
-                }
-            }
-
-            println!("\nlargest {top}:");
-            for e in report.entries.iter().take(top) {
-                println!("  {:6}  {}", e.listing_chars, e.name);
-            }
-
-            if strict && report.over_budget() {
-                process::exit(1);
-            }
-            Ok(())
-        }
+        } => run_budget(BudgetArgs {
+            skills_dir,
+            discover_under,
+            window_tokens,
+            budget_fraction,
+            budget_chars,
+            max_desc_chars,
+            top,
+            strict,
+        }),
 
         Command::Check {
             skills_dir,
@@ -438,6 +386,133 @@ fn main() -> Result<()> {
             run_workflows(&files, max_run_lines, baseline.as_deref(), write_baseline.as_deref(), top)
         }
     }
+}
+
+/// Arguments of the `budget` subcommand, bundled so the arm in `main` stays a
+/// dispatch rather than a body.
+struct BudgetArgs {
+    skills_dir: Vec<PathBuf>,
+    discover_under: Option<PathBuf>,
+    window_tokens: usize,
+    budget_fraction: f64,
+    budget_chars: Option<usize>,
+    max_desc_chars: usize,
+    top: usize,
+    strict: bool,
+}
+
+/// The `budget` subcommand.
+///
+/// Its own function for the reason `run_workflows` is: `main`'s match already
+/// trips `clippy::too_many_lines`, and moving a whole arm out is how that debt
+/// shrinks instead of growing with every subcommand.
+fn run_budget(args: BudgetArgs) -> Result<()> {
+    let BudgetArgs {
+        skills_dir,
+        discover_under,
+        window_tokens,
+        budget_fraction,
+        budget_chars,
+        max_desc_chars,
+        top,
+        strict,
+    } = args;
+
+    let homes = if let Some(root) = discover_under.as_deref() {
+        skill_lint::budget::discover_homes(root)
+    } else if skills_dir.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        skills_dir
+    };
+
+    let budget = budget_chars
+        .unwrap_or_else(|| skill_lint::budget::budget_from_window(window_tokens, budget_fraction));
+
+    let report = skill_lint::budget::compute(&homes, budget, max_desc_chars)
+        .context("computing skill-listing budget")?;
+
+    println!("homes scanned ({}):", report.homes.len());
+    for h in &report.homes {
+        println!("  {h}");
+    }
+    println!("\nskills:            {}", report.entries.len());
+    println!("listing chars:     {}", report.total_listing_chars);
+    println!("budget chars:      {}  (estimated from a {window_tokens}-token window at {budget_fraction}; chars/token is approximate)", report.budget_chars);
+
+    if report.over_budget() {
+        println!(
+            "OVER BUDGET by {} chars ({:.1}x)",
+            report.overage_chars(),
+            report.ratio()
+        );
+        println!(
+            "  On overflow the platform drops descriptions starting with the skills you\n  \
+             invoke LEAST. This tool cannot know that order — invocation counts are not on\n  \
+             disk — so it does not guess which entries go. Run /context for the real\n  \
+             post-budget size."
+        );
+    } else {
+        println!("within budget ({} chars to spare)", report.budget_chars - report.total_listing_chars);
+    }
+
+    let truncated = report.truncated();
+    if truncated.is_empty() {
+        println!("\nper-entry cap ({}): all entries fit", report.max_desc_chars);
+    } else {
+        println!(
+            "\nper-entry cap ({}): {} entries OVER, discarding {} chars outright",
+            report.max_desc_chars,
+            truncated.len(),
+            report.total_truncated_chars()
+        );
+        for e in &truncated {
+            println!("  {:6} over  {}", e.truncated_chars, e.name);
+        }
+    }
+
+    println!("\nlargest {top}:");
+    for e in report.entries.iter().take(top) {
+        println!("  {:6}  {}", e.listing_chars, e.name);
+    }
+
+    if strict {
+        let failures = strict_failures(&report);
+        if !failures.is_empty() {
+            eprintln!("\nskill-lint budget --strict: {} failure(s):", failures.len());
+            for failure in &failures {
+                eprintln!("  - {failure}");
+            }
+            process::exit(1);
+        }
+        eprintln!("skill-lint budget --strict: within budget, every entry under the per-entry cap");
+    }
+    Ok(())
+}
+
+/// Why a `--strict` budget run fails, one line per reason.
+///
+/// Two independent ways to lose text, so two conditions. Over the TOTAL, the
+/// platform drops whole descriptions; past the PER-ENTRY cap, it cuts one
+/// description mid-sentence, trigger phrases included. A strict gate that saw
+/// only the first passed a corpus whose truncation report it had just printed.
+fn strict_failures(report: &skill_lint::budget::BudgetReport) -> Vec<String> {
+    let mut failures = Vec::new();
+    if report.over_budget() {
+        failures.push(format!(
+            "listing is {} chars, over the {}-char listing budget by {}",
+            report.total_listing_chars,
+            report.budget_chars,
+            report.overage_chars()
+        ));
+    }
+    for entry in report.truncated() {
+        failures.push(format!(
+            "'{}' description is {} chars, past the {}-char per-entry cap by {} — the platform discards the rest",
+            entry.name, entry.desc_chars, report.max_desc_chars, entry.truncated_chars
+        ));
+    }
+    failures
 }
 
 /// The `workflows` subcommand.
