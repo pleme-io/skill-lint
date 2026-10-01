@@ -64,6 +64,7 @@ use anyhow::Context as _;
 
 use crate::budget::fold;
 use crate::error::{CheckKind, LintError};
+use crate::markdown::{Fences, LineKind};
 use crate::ratchet::{Ratchet, Verdict, parse_lines};
 
 /// Per-entry ceiling. An index entry is a pointer — rule, skill, doc — and 400
@@ -263,19 +264,16 @@ pub fn is_entry_bullet(line: &str) -> bool {
 #[must_use]
 pub fn scan_doc(key: &str, content: &str, index_heading: &str) -> DocScan {
     let lines: Vec<&str> = content.lines().collect();
-    let mut fenced = false;
+    let mut fences = Fences::new();
     let mut section_start: Option<(usize, usize, String)> = None; // (index, level, heading)
     let mut section_end = lines.len();
     let mut census = Census::default();
 
     for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-        }
+        let kind = fences.classify(line);
         // Census counts everything the model reads, fences included.
         count_census(line, &mut census);
-        if fenced {
+        if kind != LineKind::Prose {
             continue;
         }
 
@@ -311,15 +309,10 @@ fn heading_level(line: &str) -> Option<usize> {
 /// Split a section body into entries: each runs from its bullet to the line
 /// before the next one.
 fn collect_entries(doc_key: &str, body: &[&str], line_offset: usize) -> Vec<IndexEntry> {
-    let mut fenced = false;
+    let mut fences = Fences::new();
     let mut starts: Vec<usize> = Vec::new();
     for (index, line) in body.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
-        if !fenced && is_entry_bullet(line) {
+        if fences.classify(line) == LineKind::Prose && is_entry_bullet(line) {
             starts.push(index);
         }
     }

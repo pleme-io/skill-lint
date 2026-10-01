@@ -2,6 +2,7 @@ pub mod budget;
 pub mod check;
 pub mod claudemd;
 pub mod error;
+pub mod markdown;
 pub mod model;
 pub mod ratchet;
 pub mod workflows;

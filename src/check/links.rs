@@ -39,6 +39,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::{CheckKind, LintError, PathForm};
+use crate::markdown::{self, Segment};
 
 use super::{CheckContext, Checker};
 
@@ -121,33 +122,24 @@ pub fn body_of(content: &str) -> &str {
 #[must_use]
 pub fn scan_body(body: &str) -> BodyScan {
     let mut scan = BodyScan::default();
-    let mut fenced = false;
 
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
+    for (_, line) in markdown::prose_lines(body) {
 
         if let Some(path) = waived_path(line) {
             scan.waived.insert(path);
         }
 
-        // Odd segments of a backtick split are inline code spans; even segments
-        // are prose. Repo paths live in code, links live in prose — scanning
-        // each form only where it belongs keeps a link written INSIDE a code
-        // span (i.e. a link being shown, not made) out of the results.
-        for (index, segment) in line.split('`').enumerate() {
-            if index % 2 == 1 {
-                if let Some(path) = code_span_path(segment) {
-                    scan.refs.push(BodyRef { path, form: PathForm::RepoPath });
+        // Repo paths live in code, links live in prose — scanning each form
+        // only where it belongs keeps a link written INSIDE a code span (i.e. a
+        // link being shown, not made) out of the results.
+        for segment in markdown::segments(line) {
+            match segment {
+                Segment::Code(code) => {
+                    if let Some(path) = code_span_path(code) {
+                        scan.refs.push(BodyRef { path, form: PathForm::RepoPath });
+                    }
                 }
-            } else {
-                collect_relative_links(segment, &mut scan.refs);
+                Segment::Prose { text, .. } => collect_relative_links(text, &mut scan.refs),
             }
         }
     }

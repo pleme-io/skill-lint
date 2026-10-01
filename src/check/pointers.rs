@@ -70,6 +70,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::{CheckKind, LintError};
+use crate::markdown::{self, Segment};
 
 use super::links::body_of;
 use super::{CheckContext, Checker};
@@ -114,38 +115,31 @@ pub struct PointerScan {
 #[must_use]
 pub fn scan_pointers(body: &str) -> PointerScan {
     let mut scan = PointerScan::default();
-    let mut fenced = false;
 
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
+    for (_, line) in markdown::prose_lines(body) {
 
         if let Some(token) = waived_token(line) {
             scan.waived.insert(token);
         }
 
-        // Odd segments of a backtick split are inline code spans, even segments
-        // are prose. The two forms are matched by different rules because they
-        // fail in different directions: a span carries its own delimiters, so
-        // "is the whole span the pointer?" is answerable exactly, while prose
-        // has to infer the left boundary.
-        for (index, segment) in line.split('`').enumerate() {
-            if index % 2 == 1 {
-                if let Some(name) = whole_span_pointer(segment) {
-                    scan.refs.push(name);
+        // The two forms are matched by different rules because they fail in
+        // different directions: a span carries its own delimiters, so "is the
+        // whole span the pointer?" is answerable exactly, while prose has to
+        // infer the left boundary.
+        for segment in markdown::segments(line) {
+            match segment {
+                Segment::Code(code) => {
+                    if let Some(name) = whole_span_pointer(code) {
+                        scan.refs.push(name);
+                    }
                 }
-            } else {
-                // A prose segment at index 0 begins the line; any later even
-                // segment begins immediately after a CLOSING backtick, so a
-                // match at its offset 0 butted straight against `X` — the
-                // alternation form, not a pointer.
-                collect_prose_pointers(segment, index == 0, &mut scan.refs);
+                // A prose segment that does not begin the line begins
+                // immediately after a CLOSING backtick, so a match at its
+                // offset 0 butted straight against `X` — the alternation form,
+                // not a pointer.
+                Segment::Prose { text, at_line_start } => {
+                    collect_prose_pointers(text, at_line_start, &mut scan.refs);
+                }
             }
         }
     }

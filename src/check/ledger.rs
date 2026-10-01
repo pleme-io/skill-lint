@@ -35,6 +35,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::{CheckKind, LintError};
+use crate::markdown::{Fences, LineKind};
 
 use super::links::body_of;
 use super::{CheckContext, Checker};
@@ -130,21 +131,18 @@ fn is_separator(line: &str) -> bool {
 pub fn scan_ledgers(body: &str) -> Vec<Vec<LedgerRow>> {
     let lines: Vec<&str> = body.lines().collect();
     let mut ledgers = Vec::new();
-    let mut fenced = false;
+    let mut fences = Fences::new();
 
     for (index, line) in lines.iter().enumerate() {
+        let shown = fences.classify(line) != LineKind::Prose;
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
         // The marker DECLARES, so it must be the whole line. Merely containing
         // it is how a skill *writes about* the convention — "add a
         // `<!-- tier-ledger -->` marker above a table" — and reading that
         // sentence as a declaration turns every skill that documents the
         // format into a malformed ledger. All three pipeline skills do exactly
         // that, which is how this was caught.
-        if fenced || trimmed.trim_end() != LEDGER_MARKER {
+        if shown || trimmed.trim_end() != LEDGER_MARKER {
             continue;
         }
 
