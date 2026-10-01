@@ -56,8 +56,9 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         top: usize,
 
-        /// Exit non-zero when the listing is over budget OR any entry is past
-        /// `--max-desc-chars`, for use as a gate. Without it the run is a
+        /// Exit non-zero when the listing is over budget, any entry is past
+        /// `--max-desc-chars`, or any `SKILL.md` is unreadable, unparseable or
+        /// description-less, for use as a gate. Without it the run is a
         /// report and exits 0 either way.
         #[arg(long)]
         strict: bool,
@@ -765,6 +766,18 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
         println!("  {:6}  {}", e.listing_chars, e.name);
     }
 
+    if report.findings.is_empty() {
+        println!("\nevery SKILL.md parsed with a description");
+    } else {
+        println!(
+            "\nunreadable or description-less SKILL.md: {} (not counted as authored)",
+            report.findings.len()
+        );
+        for finding in &report.findings {
+            println!("  {finding}");
+        }
+    }
+
     if strict {
         let failures = strict_failures(&report);
         if !failures.is_empty() {
@@ -774,7 +787,9 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
             }
             process::exit(1);
         }
-        eprintln!("skill-lint budget --strict: within budget, every entry under the per-entry cap");
+        eprintln!(
+            "skill-lint budget --strict: within budget, every entry under the per-entry cap, every SKILL.md parsed"
+        );
     }
     Ok(())
 }
@@ -785,6 +800,10 @@ fn run_budget(args: BudgetArgs) -> Result<()> {
 /// platform drops whole descriptions; past the PER-ENTRY cap, it cuts one
 /// description mid-sentence, trigger phrases included. A strict gate that saw
 /// only the first passed a corpus whose truncation report it had just printed.
+///
+/// A third: a `SKILL.md` the scan could not read, parse, or find a description
+/// in. Skipped, it vanishes from both totals above, so the gate would pass a
+/// corpus it never read — every finding is therefore a failure here.
 fn strict_failures(report: &skill_lint::budget::BudgetReport) -> Vec<String> {
     let mut failures = Vec::new();
     if report.over_budget() {
@@ -796,11 +815,13 @@ fn strict_failures(report: &skill_lint::budget::BudgetReport) -> Vec<String> {
         ));
     }
     for entry in report.truncated() {
-        failures.push(format!(
+        failures.extend(report.findings.iter().map(ToString::to_string));
+    failures.push(format!(
             "'{}' description is {} chars, past the {}-char per-entry cap by {} — the platform discards the rest",
             entry.name, entry.desc_chars, report.max_desc_chars, entry.truncated_chars
         ));
     }
+    failures.extend(report.findings.iter().map(ToString::to_string));
     failures
 }
 

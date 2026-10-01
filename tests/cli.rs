@@ -383,6 +383,64 @@ fn budget_without_strict_reports_and_exits_zero() {
         .stdout(predicate::str::contains("entries OVER"));
 }
 
+/// A skill home holding one parseable skill, one whose `description` carries
+/// an unquoted `': '`, and one with no `description` at all.
+fn unparseable_home() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/budget/unparseable/skills")
+}
+
+/// RED. A SKILL.md whose frontmatter failed to parse was skipped with a bare
+/// `continue`: it vanished from the count, so `--strict` passed a corpus it
+/// had not read. The gate must name the file and the parser's own cause.
+#[test]
+fn budget_strict_fails_on_an_unparseable_skill_and_names_file_and_cause() {
+    budget(&unparseable_home(), &["--budget-chars", "100000", "--strict"])
+        .failure()
+        .stderr(predicate::str::contains("colon/SKILL.md"))
+        .stderr(predicate::str::contains("mapping values are not allowed"))
+        .stderr(predicate::str::contains("'>-' folded block"));
+}
+
+/// RED. A skill with no `description` reaches the listing as a bare name —
+/// unroutable by description match — and must fail the gate the same way.
+#[test]
+fn budget_strict_fails_on_a_description_less_skill() {
+    budget(&unparseable_home(), &["--budget-chars", "100000", "--strict"])
+        .failure()
+        .stderr(predicate::str::contains("silent/SKILL.md"))
+        .stderr(predicate::str::contains("no description"));
+}
+
+/// Without `--strict` the run stays a report: the finding is printed, the
+/// exit is 0, and the parseable sibling is still counted.
+#[test]
+fn budget_without_strict_reports_unparseable_skills_and_exits_zero() {
+    budget(&unparseable_home(), &["--budget-chars", "100000"])
+        .success()
+        .stdout(predicate::str::contains("unreadable or description-less SKILL.md: 2"))
+        .stdout(predicate::str::contains("colon/SKILL.md"))
+        .stdout(predicate::str::contains("silent/SKILL.md"))
+        .stdout(predicate::str::contains("fine"));
+}
+
+/// `check` surfaces the same parse failure through its frontmatter checker.
+#[test]
+fn check_reports_the_unquoted_colon_as_a_parse_failure() {
+    let dir = TempDir::new().unwrap();
+    let skill = dir.path().join("colon");
+    fs::create_dir_all(&skill).unwrap();
+    fs::copy(unparseable_home().join("colon/SKILL.md"), skill.join("SKILL.md")).unwrap();
+    valid_map(dir.path(), &[("colon", "meta")]);
+
+    Command::cargo_bin("skill-lint")
+        .unwrap()
+        .args(["check", "--skills-dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("colon"))
+        .stderr(predicate::str::contains("mapping values are not allowed"));
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // claudemd — the anti-regrowth seal
 // ═══════════════════════════════════════════════════════════════════

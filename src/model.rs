@@ -89,6 +89,25 @@ pub fn parse_frontmatter(content: &str) -> anyhow::Result<SkillFrontmatter> {
     SkillFrontmatter::parse(content)
 }
 
+/// Maps a YAML parser message onto the edit that fixes it, for the failure
+/// shapes that actually occur in SKILL.md frontmatter.
+///
+/// `description` is the field this bites: it is long, prose-like, routinely
+/// edited, and almost always an unquoted scalar — so adding a clause with a
+/// colon in it silently ends the value and YAML reads the rest as a mapping.
+#[must_use]
+pub fn frontmatter_parse_hint(cause: &str) -> String {
+    if cause.contains("mapping values are not allowed") {
+        ". An unquoted scalar contains ': ' — quote the value, or make it a '>-' folded block".into()
+    } else if cause.contains("did not find expected key")
+        || cause.contains("could not find expected ':'")
+    {
+        ". Check indentation under 'metadata:' — a continuation line must be indented past its key".into()
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

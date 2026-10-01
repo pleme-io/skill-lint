@@ -61,6 +61,46 @@ pub struct Entry {
     pub truncated_chars: usize,
 }
 
+/// Why a `SKILL.md` under a scanned home did not contribute a described entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindingKind {
+    /// The file exists but could not be read.
+    Unreadable { cause: String },
+    /// The frontmatter is not valid YAML; `hint` names the fix when the cause
+    /// is a known shape (an unquoted `': '` in `description`).
+    Unparseable { cause: String, hint: String },
+    /// The frontmatter parses but carries no (or a blank) `description`, so the
+    /// listing offers a bare name nothing can route to.
+    MissingDescription,
+}
+
+/// A `SKILL.md` the listing cannot account for as authored.
+///
+/// Skipping these is the failure this type exists to prevent: a skill that
+/// silently drops out of the count makes every total smaller and every gate
+/// greener than the corpus it claims to have read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub path: PathBuf,
+    pub kind: FindingKind,
+}
+
+impl std::fmt::Display for Finding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = self.path.display();
+        match &self.kind {
+            FindingKind::Unreadable { cause } => write!(f, "{path}: unreadable: {cause}"),
+            FindingKind::Unparseable { cause, hint } => {
+                write!(f, "{path}: frontmatter is not valid YAML: {cause}{hint}")
+            }
+            FindingKind::MissingDescription => write!(
+                f,
+                "{path}: no description — the listing carries a bare name nothing can route to"
+            ),
+        }
+    }
+}
+
 /// The whole corpus's listing accounting.
 #[derive(Debug, Clone)]
 pub struct BudgetReport {
@@ -71,6 +111,9 @@ pub struct BudgetReport {
     /// Homes scanned, so a report over a partial corpus is never mistaken for
     /// the whole. The live listing is the UNION of every deployed home.
     pub homes: Vec<String>,
+    /// Every `SKILL.md` that is unreadable, unparseable or description-less,
+    /// in scan order. Reported always; a failure under `--strict`.
+    pub findings: Vec<Finding>,
 }
 
 impl BudgetReport {
@@ -119,22 +162,45 @@ pub fn compute(
     // shipping the same skill cost the listing once, not twice.
     let mut by_name: BTreeMap<String, Entry> = BTreeMap::new();
     let mut scanned = Vec::new();
+    let mut findings = Vec::new();
 
     for home in homes {
         scanned.push(home.display().to_string());
         let Ok(read) = std::fs::read_dir(home) else { continue };
-        for dir in read.filter_map(Result::ok) {
-            let path = dir.path();
+        let mut dirs: Vec<PathBuf> = read.filter_map(Result::ok).map(|e| e.path()).collect();
+        dirs.sort();
+        for path in dirs {
             if !path.is_dir() {
                 continue;
             }
             let skill_md = path.join("SKILL.md");
-            let Ok(content) = std::fs::read_to_string(&skill_md) else { continue };
-            let Ok(fm) = model::parse_frontmatter(&content) else { continue };
+            if !skill_md.is_file() {
+                continue;
+            }
+            let content = match std::fs::read_to_string(&skill_md) {
+                Ok(content) => content,
+                Err(e) => {
+                    let kind = FindingKind::Unreadable { cause: e.to_string() };
+                    findings.push(Finding { path: skill_md, kind });
+                    continue;
+                }
+            };
+            let fm = match model::parse_frontmatter(&content) {
+                Ok(fm) => fm,
+                Err(e) => {
+                    let cause = e.to_string();
+                    let hint = model::frontmatter_parse_hint(&cause);
+                    findings.push(Finding { path: skill_md, kind: FindingKind::Unparseable { cause, hint } });
+                    continue;
+                }
+            };
             let name = fm.name.clone().unwrap_or_else(|| {
                 path.file_name().unwrap_or_default().to_string_lossy().into_owned()
             });
             let folded = fm.description.as_deref().map(fold).unwrap_or_default();
+            if folded.is_empty() {
+                findings.push(Finding { path: skill_md, kind: FindingKind::MissingDescription });
+            }
             let desc_chars = folded.chars().count();
             let truncated_chars = desc_chars.saturating_sub(max_desc_chars);
             // The platform only ever ships the capped prefix, so the listing
@@ -157,7 +223,7 @@ pub fn compute(
     entries.sort_by(|a, b| b.listing_chars.cmp(&a.listing_chars).then(a.name.cmp(&b.name)));
     let total_listing_chars = entries.iter().map(|e| e.listing_chars).sum();
 
-    Ok(BudgetReport { entries, total_listing_chars, budget_chars, max_desc_chars, homes: scanned })
+    Ok(BudgetReport { entries, total_listing_chars, budget_chars, max_desc_chars, homes: scanned, findings })
 }
 
 /// Derive a character budget from a context-window size in tokens.
@@ -234,11 +300,35 @@ mod tests {
             budget_chars: 1000,
             max_desc_chars: 1536,
             homes: vec!["h".into()],
+            findings: vec![],
         };
         assert!(r.over_budget());
         assert_eq!(r.overage_chars(), 646);
         assert_eq!(r.truncated().len(), 1);
         assert_eq!(r.total_truncated_chars(), 464);
+    }
+
+    #[test]
+    fn a_blank_description_is_a_finding_and_a_parse_failure_is_not_counted() {
+        let home = tempfile::TempDir::new().unwrap();
+        for (name, fm) in [
+            ("blank", "name: blank\ndescription: \"  \""),
+            ("colon", "name: colon\ndescription: two shapes: one and two"),
+            ("fine", "name: fine\ndescription: ok"),
+        ] {
+            std::fs::create_dir_all(home.path().join(name)).unwrap();
+            std::fs::write(home.path().join(name).join("SKILL.md"), format!("---\n{fm}\n---\n")).unwrap();
+        }
+        std::fs::create_dir_all(home.path().join("not-a-skill")).unwrap();
+
+        let r = compute(&[home.path().to_path_buf()], 100_000, DEFAULT_MAX_DESC_CHARS).unwrap();
+
+        let names: Vec<&str> = r.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["fine", "blank"]);
+        let kinds: Vec<&FindingKind> = r.findings.iter().map(|f| &f.kind).collect();
+        assert_eq!(kinds.len(), 2, "{kinds:?}");
+        assert_eq!(kinds[0], &FindingKind::MissingDescription);
+        assert!(matches!(kinds[1], FindingKind::Unparseable { hint, .. } if hint.contains("'>-'")));
     }
 
     #[test]
