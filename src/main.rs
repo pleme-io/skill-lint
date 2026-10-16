@@ -178,6 +178,25 @@ enum Command {
         top: usize,
     },
 
+    /// Flag procedure kept in skill prose: shell fences past the glue allowance
+    /// and long numbered step lists. Ratcheted: only new or grown debt fails.
+    Procedure {
+        #[arg(long)]
+        skills_dir: Vec<PathBuf>,
+
+        #[arg(long, default_value_t = skill_lint::procedure::DEFAULT_MAX_SHELL_LINES)]
+        max_shell_lines: usize,
+
+        #[arg(long, default_value_t = skill_lint::procedure::DEFAULT_MAX_STEPS)]
+        max_steps: usize,
+
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+    },
+
     /// Lint GitHub Actions workflows for inline shell — the no-shell seal.
     ///
     /// The fleet PRIME DIRECTIVE allows ~3 lines of inline glue and no more. The
@@ -463,6 +482,13 @@ fn main() -> Result<()> {
             baseline.as_deref(),
             write_baseline.as_deref(),
             top,
+        ),
+
+        Command::Procedure { skills_dir, max_shell_lines, max_steps, baseline, write_baseline } => run_procedure(
+            &skills_dir,
+            skill_lint::procedure::ProcedureConfig { max_shell_lines, max_steps },
+            baseline.as_deref(),
+            write_baseline.as_deref(),
         ),
 
         Command::Workflows { files, max_run_lines, baseline, write_baseline, top } => {
@@ -991,6 +1017,48 @@ fn print_body_cap(report: &skill_lint::budget::BudgetReport, cap: usize) {
     for e in &over {
         println!("  {:7} bytes  {}  (+{})", e.body_bytes, e.name, e.body_bytes - cap);
     }
+}
+
+fn run_procedure(
+    homes: &[PathBuf],
+    config: skill_lint::procedure::ProcedureConfig,
+    baseline: Option<&std::path::Path>,
+    write_baseline: Option<&std::path::Path>,
+) -> Result<()> {
+    use skill_lint::procedure::Baseline;
+
+    let known = match baseline {
+        Some(path) => Baseline::load(path)?,
+        None => Baseline::default(),
+    };
+    let report = skill_lint::procedure::lint(homes, &config, &known).context("scanning skills")?;
+    let shell = report.scans.iter().filter(|s| s.shell_over(&config) > 0).count();
+    let steps = report.scans.iter().filter(|s| s.steps_over(&config) > 0).count();
+    println!(
+        "scanned {} skill(s) in {} home(s): {shell} with shell fences over {} lines, {steps} with step runs over {}",
+        report.scans.len(),
+        report.homes.len(),
+        config.max_shell_lines,
+        config.max_steps
+    );
+
+    if let Some(path) = write_baseline {
+        let text = Baseline::render(&report.scans, &config);
+        std::fs::write(path, &text).with_context(|| format!("writing baseline {}", path.display()))?;
+        println!("wrote baseline {}", path.display());
+        return Ok(());
+    }
+
+    if report.is_ok() {
+        eprintln!("skill-lint procedure: all checks passed ({} skills)", report.scans.len());
+    } else {
+        eprintln!("skill-lint procedure: {} error(s):", report.errors.len());
+        for err in &report.errors {
+            eprintln!("  - {err}");
+        }
+        process::exit(1);
+    }
+    Ok(())
 }
 
 /// The `workflows` subcommand.

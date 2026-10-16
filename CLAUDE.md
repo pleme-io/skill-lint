@@ -127,6 +127,26 @@ can no longer exercise this**. The fixtures in
 there is; deleting them silently removes the only thing standing between this
 tool and the bug it was written to avoid repeating.
 
+## `procedure` — skills stay thin orchestration
+
+A skill body is a token-cheap orchestration of typed program invocations
+(operator, 2026-10-16); deterministic logic lives in blue, tatara-lisp or Rust.
+`procedure` flags the two shapes that mean the logic stayed in prose:
+
+```
+skill-lint procedure --skills-dir <home>... --baseline <file>
+```
+
+- a shell-tagged fence (`bash`, `sh`, `shell`, `zsh`, `console`, …) with more
+  than `--max-shell-lines` (3) non-blank, non-comment lines; an untagged fence
+  is output, not shell;
+- a run of more than `--max-steps` (7) top-level numbered items in prose.
+
+Baselined with the shared ratchet (`shell: <skill> <lines>`,
+`steps: <skill> <count>`): only a new or grown violation fails, and zero
+skills scanned fails. The fleet baseline is `nix/parts/skill-procedure.baseline`,
+run by the nix repo's `context-budget` check.
+
 ## `chain` — what one session actually loads
 
 `claudemd` measures one file. Claude Code never loads one file: a session

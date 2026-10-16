@@ -6,6 +6,7 @@ pub mod error;
 pub mod markdown;
 pub mod mcp;
 pub mod model;
+pub mod procedure;
 pub mod ratchet;
 pub mod usage;
 pub mod workflows;
