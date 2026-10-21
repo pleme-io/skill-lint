@@ -2,7 +2,7 @@
   "schema_version": 2,
   "cargo_lock_sha256": "227b2686a1fb06bc688d3ba92594719abc509983e6ebc846ca9d67f8ed08b58d",
   "manifest_sha256": {
-    "Cargo.toml": "365ab49e748c5f5cbdf1bfbcc3ad5ec1f1362f73e1d1b1231641aa9264fb2015"
+    "Cargo.toml": "06c01b7b15880c8ecd872da3c6c479722161551223ee4dbcc4f7db9fd1896f63"
   },
   "target_resolves": {
     "base": {

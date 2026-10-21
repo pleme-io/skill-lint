@@ -210,98 +210,35 @@ fn check_still_fails_on_an_unwaived_sibling_path() {
         .stderr(predicate::str::contains("./gone-a.md' does not resolve").not());
 }
 
-#[test]
-fn check_passes_on_real_skills() {
-    // Run against the actual blackmatter-pleme skills if available.
-    // Uses SKILL_LINT_REAL_SKILLS env var or default path.
-    //
-    // This gate used to be `skills_dir.join("skill-map.yaml").exists()` — the
-    // real repo carries a split `skill-map.d/`, so the condition was never
-    // true and the test never once executed. That is the same defect this
-    // tool now refuses in its own subject: a check that reports success
-    // without checking anything. Two rules keep it closed:
-    //
-    //   1. Gate on the FIXTURE being absent, never on where the map happens
-    //      to live. Locating the map is the production lookup's job — the CLI
-    //      below performs it. A second copy of that resolution here is what
-    //      drifted out from under the real one in the first place.
-    //   2. When the fixture IS present, run and assert. A missing or
-    //      unresolvable map is then a failure, not a silent skip.
-    let default = format!(
-        "{}/code/github/pleme-io/blackmatter-pleme/skills",
-        std::env::var("HOME").unwrap_or_default()
-    );
-    let skills_dir =
-        std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_SKILLS").unwrap_or(default));
-
-    if !skills_dir.is_dir() {
-        // Legitimate skip: a machine without blackmatter-pleme checked out.
-        // Announced, not silent — visible under `cargo test -- --nocapture`
-        // (or `--show-output`), so a skip can never hide as a pass again.
-        eprintln!(
-            "SKIP check_passes_on_real_skills: no fixture at {} \
-             (set SKILL_LINT_REAL_SKILLS to point at a real skills dir)",
-            skills_dir.display()
-        );
-        return;
+fn fixture_or_override(var: &str, fixture: &str) -> (std::path::PathBuf, bool) {
+    match std::env::var_os(var) {
+        Some(path) => (std::path::PathBuf::from(path), false),
+        None => (std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(fixture), true),
     }
+}
 
-    eprintln!("RUN check_passes_on_real_skills against {}", skills_dir.display());
+fn corpus_skills() -> (std::path::PathBuf, bool) {
+    let (dir, is_fixture) = fixture_or_override("SKILL_LINT_REAL_SKILLS", "tests/fixtures/corpus/skills");
+    assert!(dir.is_dir(), "no skills home at {}", dir.display());
+    (dir, is_fixture)
+}
+
+#[test]
+fn check_passes_on_the_corpus() {
+    let (skills_dir, _) = corpus_skills();
+
     Command::cargo_bin("skill-lint")
         .unwrap()
-        .args([
-            "check",
-            "--skills-dir",
-            skills_dir.to_str().unwrap(),
-            // BASELINE DEBT, not a claim of cleanliness. Measured 2026-07-27,
-            // the day path resolution landed: the real corpus carries 22 dead
-            // pointers across 144 skills (3 relative links, 19 repo-relative
-            // paths) — pre-existing defects in a repository this crate does not
-            // own and must not silently "fix" by creating the files.
-            //
-            // This test's contract is the STRUCTURAL suite — sync, frontmatter,
-            // map-integrity, version, listing-budget — and that contract is
-            // still asserted in full. The companion test below runs the corpus
-            // WITH resolution on, so the new check is exercised against real
-            // data rather than only against fixtures. Drop this flag once the
-            // 22 are fixed or waived upstream; do not use it to keep them.
-            "--skip-path-resolution",
-        ])
+        .args(["check", "--skills-dir", skills_dir.to_str().unwrap(), "--skip-path-resolution"])
         .assert()
         .success()
-        // Not merely exit-0: assert it actually linted something. Without this
-        // the test would have gone green on the very "0 skills" vacuous pass
-        // the DiscoveryChecker now forbids.
         .stderr(predicate::str::contains("all checks passed"))
         .stderr(predicate::str::contains("(0 skills)").not());
 }
 
-/// Run the real corpus WITH path resolution on, so the check meets real data.
-///
-/// It deliberately asserts neither success nor failure on the count: the corpus
-/// lives in another repository and its dead-pointer debt moves under this
-/// crate's feet in both directions. What it DOES assert is the property that
-/// stays true either way — that path resolution is the only outstanding class,
-/// i.e. no other check regressed behind the skip flag the test above passes.
-/// The findings are printed so the debt stays visible rather than hidden by a
-/// flag (`cargo test -- --nocapture`).
 #[test]
-fn real_skills_carry_no_error_class_other_than_path_resolution() {
-    let default = format!(
-        "{}/code/github/pleme-io/blackmatter-pleme/skills",
-        std::env::var("HOME").unwrap_or_default()
-    );
-    let skills_dir =
-        std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_SKILLS").unwrap_or(default));
-
-    if !skills_dir.is_dir() {
-        eprintln!(
-            "SKIP real_skills_carry_no_error_class_other_than_path_resolution: \
-             no fixture at {}",
-            skills_dir.display()
-        );
-        return;
-    }
+fn corpus_carries_no_error_class_other_than_path_resolution() {
+    let (skills_dir, is_fixture) = corpus_skills();
 
     let out = Command::cargo_bin("skill-lint")
         .unwrap()
@@ -309,10 +246,15 @@ fn real_skills_carry_no_error_class_other_than_path_resolution() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
-    eprintln!("REAL CORPUS path-resolution run:\n{stderr}");
 
-    for other in ["[sync]", "[frontmatter]", "[map-integrity]", "[version]", "[discovery]", "[listing-budget]"] {
-        assert!(!stderr.contains(other), "unexpected {other} error on the real corpus:\n{stderr}");
+    for other in ["[sync]", "[frontmatter]", "[map-integrity]", "[version]", "[discovery]", "[listing-budget]", "[skill-pointer]"] {
+        assert!(!stderr.contains(other), "unexpected {other} error on the corpus:\n{stderr}");
+    }
+    if is_fixture {
+        assert!(!out.status.success(), "the dead link went unreported:\n{stderr}");
+        assert!(stderr.contains("[path-resolution]"), "path resolution did not run:\n{stderr}");
+        assert!(stderr.contains("checklist.md"), "the dead link was not named:\n{stderr}");
+        assert!(!stderr.contains("guide.md"), "a live link was reported dead:\n{stderr}");
     }
 }
 
@@ -744,31 +686,20 @@ fn claudemd_enforces_the_whole_file_ceiling() {
         .stderr(predicate::str::contains("standing tax"));
 }
 
-/// Run the seal against the live file and prove the baseline round-trip on real
-/// data: record what is there, then re-run and go green.
-///
-/// It deliberately does NOT assert an exit code on the unbaselined run — the
-/// file lives in another repository and its debt moves under this crate's feet.
-/// What it asserts is the property that stays true either way: the scan finds
-/// the index section, measures entries, and a baseline written from that scan
-/// makes the very same scan pass.
 #[test]
-fn claudemd_round_trips_on_the_real_org_file() {
-    let default = format!(
-        "{}/code/github/pleme-io/blackmatter-pleme/docs/pleme-io-CLAUDE.md",
-        std::env::var("HOME").unwrap_or_default()
-    );
-    let file =
-        std::path::PathBuf::from(std::env::var("SKILL_LINT_REAL_CLAUDEMD").unwrap_or(default));
+fn claudemd_round_trips_on_the_org_file() {
+    let (file, is_fixture) = fixture_or_override("SKILL_LINT_REAL_CLAUDEMD", "tests/fixtures/claudemd/org-CLAUDE.md");
+    assert!(file.is_file(), "no CLAUDE.md at {}", file.display());
 
-    if !file.is_file() {
-        // Announced, not silent — a skip must never be able to hide as a pass.
-        eprintln!(
-            "SKIP claudemd_round_trips_on_the_real_org_file: no fixture at {} \
-             (set SKILL_LINT_REAL_CLAUDEMD)",
-            file.display()
-        );
-        return;
+    if is_fixture {
+        Command::cargo_bin("skill-lint")
+            .unwrap()
+            .args(["claudemd", "--file", file.to_str().unwrap()])
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("index entries: 3 "))
+            .stderr(predicate::str::contains("[claudemd-entry]"))
+            .stderr(predicate::str::contains("Overgrown"));
     }
 
     let dir = TempDir::new().unwrap();

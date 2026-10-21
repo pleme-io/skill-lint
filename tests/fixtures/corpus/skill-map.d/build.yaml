@@ -1,0 +1,13 @@
+build-entry:
+  description: Pick a build recipe for a project
+  domain: build
+  repo: skill-lint
+  concerns: [recipe discovery]
+  references: [rust-recipe]
+
+rust-recipe:
+  description: Build a Rust binary with the house recipe
+  domain: build
+  repo: skill-lint
+  concerns: [rust binaries]
+  references: [build-entry]

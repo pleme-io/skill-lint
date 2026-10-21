@@ -1,0 +1,6 @@
+map-keeper:
+  description: Keep the skill map in step with the skills
+  domain: meta
+  repo: skill-lint
+  concerns: [map integrity]
+  references: [build-entry]

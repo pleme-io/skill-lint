@@ -4,6 +4,7 @@ version = "0.1.12"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
+repository = "https://github.com/pleme-io/skill-lint"
 description = "Validate Claude Code skill maps — sync, frontmatter, references, domains"
 
 [dependencies]
