@@ -290,6 +290,97 @@ enum Command {
         #[command(subcommand)]
         action: UsageAction,
     },
+
+    /// Diagnose why a skill did not fire: a ranked list of reasons, each with
+    /// its evidence and the exact fix command.
+    ///
+    /// Checks deployment and staleness, frontmatter, the listing budget and
+    /// drop order, shadowing, map integrity, the body cap, invocation flags
+    /// and, given a prompt (`--prompt-file` or piped stdin), a lexical match
+    /// against every deployed skill. The prompt is read and never stored;
+    /// only its terms, secret-looking tokens removed, appear in the output.
+    #[command(name = "why-not")]
+    WhyNot(WhyNotArgs),
+}
+
+#[derive(clap::Args)]
+struct PathArgs {
+    /// Deployed skills home. Defaults to `$HOME/.claude/skills`.
+    #[arg(long)]
+    skills_dir: Option<PathBuf>,
+
+    /// Workspace root holding the skill repos. Defaults to `$HOME/code/github/pleme-io`.
+    #[arg(long)]
+    workspace_root: Option<PathBuf>,
+
+    /// Skill source home; repeat. Defaults to `<workspace-root>/*/skills`.
+    #[arg(long)]
+    source_dir: Vec<PathBuf>,
+
+    /// Skill map dir; repeat. Defaults to `<workspace-root>/*/skill-map.d`.
+    #[arg(long)]
+    map_dir: Vec<PathBuf>,
+
+    /// Plugin root searched for same-named skills; repeat. Defaults to `$HOME/.claude/plugins`.
+    #[arg(long)]
+    plugin_dir: Vec<PathBuf>,
+
+    /// Source tree scanned for a reader of `domain_keywords`; repeat.
+    #[arg(long)]
+    router_root: Vec<PathBuf>,
+
+    /// Project-scope skills home. Defaults to `<cwd>/.claude/skills`.
+    #[arg(long)]
+    project_skills_dir: Option<PathBuf>,
+
+    /// The usage log. Same default as `usage record`.
+    #[arg(long)]
+    log: Option<PathBuf>,
+
+    /// Context window in tokens; the listing budget is a fraction of it.
+    #[arg(long, default_value_t = 1_000_000)]
+    window_tokens: usize,
+
+    /// Exact listing budget in characters, overriding `--window-tokens`.
+    #[arg(long)]
+    budget_chars: Option<usize>,
+
+    /// Per-entry cap (`skillListingMaxDescChars`).
+    #[arg(long, default_value_t = skill_lint::budget::DEFAULT_MAX_DESC_CHARS)]
+    max_desc_chars: usize,
+
+    /// Evaluate at this RFC 3339 instant instead of now.
+    #[arg(long, hide = true)]
+    now: Option<String>,
+
+    /// Print JSON on stdout instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
+struct WhyNotArgs {
+    /// The skill that did not fire.
+    #[arg(long)]
+    skill: String,
+
+    /// A file holding the prompt that should have fired it. Without it, stdin
+    /// is read when stdin is not a terminal.
+    #[arg(long)]
+    prompt_file: Option<PathBuf>,
+
+    #[command(flatten)]
+    paths: PathArgs,
+}
+
+#[derive(clap::Args)]
+struct MissesArgs {
+    /// Window: `<N>` days, `<N>h`, `<N>d`, `<N>w`, or `all`.
+    #[arg(long, default_value = "30d")]
+    window: String,
+
+    #[command(flatten)]
+    paths: PathArgs,
 }
 
 #[derive(Subcommand)]
@@ -312,7 +403,19 @@ enum UsageAction {
         /// `$HOME/.local/state/skill-lint/usage.jsonl`.
         #[arg(long)]
         log: Option<PathBuf>,
+
+        /// Do not append the per-prompt candidate line (top-3 skill names and
+        /// scores, never the prompt) that `usage misses` reads.
+        #[arg(long)]
+        no_prompts: bool,
     },
+
+    /// Prompts where a strong skill candidate existed and no skill fired,
+    /// grouped by skill, with a miss rate and the dominant reason class.
+    ///
+    /// Reads only the per-prompt candidate lines `usage record` appends (ids,
+    /// skill names, scores): the log holds no prompt text.
+    Misses(MissesArgs),
 
     /// Counts per skill, deployed skills unused in the window, and the drop
     /// order the listing budget implies (least used first).
@@ -503,6 +606,10 @@ fn main() -> Result<()> {
 
         Command::Usage { action: UsageAction::McpReport(args) } => run_mcp_report(&args),
 
+        Command::Usage { action: UsageAction::Misses(args) } => run_misses(&args),
+
+        Command::WhyNot(args) => run_why_not(&args),
+
         // Dispatched before `Cli::parse`, so clap can never exit 2 on its behalf.
         Command::Usage { action: UsageAction::Record { .. } } => Ok(()),
     }
@@ -531,7 +638,8 @@ fn run_usage_record(args: Vec<std::ffi::OsString>) -> ! {
                 return;
             }
         };
-        let Command::Usage { action: UsageAction::Record { skills_dir, log } } = cli.command else { return };
+        let Command::Usage { action: UsageAction::Record { skills_dir, log, no_prompts } } = cli.command else { return };
+        let prompts = !no_prompts;
         let home = std::env::var_os("HOME");
         let Some(log) = log.or_else(|| usage::default_log_path(std::env::var_os("XDG_STATE_HOME"), home.clone()))
         else {
@@ -543,12 +651,102 @@ fn run_usage_record(args: Vec<std::ffi::OsString>) -> ! {
         if std::io::stdin().lock().take(MAX_EVENT_BYTES).read_to_end(&mut input).is_err() {
             return;
         }
-        let env = RecordEnv { skills_dir: skills_dir.as_deref(), now: usage::now_secs() };
+        let env = RecordEnv { skills_dir: skills_dir.as_deref(), now: usage::now_secs(), nonce: usage::nonce() };
+        if prompts {
+            if let Some(line) = usage::prompt_line(&input, &env) {
+                let _ = usage::append(&log, &line);
+            }
+        }
         if let Some(line) = usage::record(&input, &env) {
             let _ = usage::append(&log, &line);
         }
     });
     process::exit(0)
+}
+
+fn resolve_paths(a: &PathArgs) -> Result<(skill_lint::whynot::Paths, PathBuf, i64, usize)> {
+    use skill_lint::whynot::{Overrides, Paths};
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let cwd = std::env::current_dir().ok();
+    let paths = Paths::resolve(
+        Overrides {
+            deployed: a.skills_dir.clone(),
+            workspace_root: a.workspace_root.clone(),
+            source_homes: a.source_dir.clone(),
+            map_dirs: a.map_dir.clone(),
+            plugin_roots: a.plugin_dir.clone(),
+            router_roots: a.router_root.clone(),
+            project_skills: a.project_skills_dir.clone(),
+        },
+        home.as_deref(),
+        cwd.as_deref(),
+    )?;
+    let log = report_log(a.log.as_deref(), home.map(Into::into))?;
+    let now = report_now(a.now.as_deref())?;
+    let budget = a
+        .budget_chars
+        .unwrap_or_else(|| skill_lint::budget::budget_from_window(a.window_tokens, skill_lint::budget::DEFAULT_BUDGET_FRACTION));
+    Ok((paths, log, now, budget))
+}
+
+fn read_prompt(file: Option<&std::path::Path>) -> Result<Option<String>> {
+    use std::io::{IsTerminal as _, Read as _};
+
+    let cap = skill_lint::route::MAX_PROMPT_BYTES as u64;
+    let mut buf = Vec::new();
+    match file {
+        Some(f) => {
+            std::fs::File::open(f).with_context(|| format!("opening {}", f.display()))?.take(cap).read_to_end(&mut buf)?;
+        }
+        None if !std::io::stdin().is_terminal() => {
+            std::io::stdin().lock().take(cap).read_to_end(&mut buf)?;
+        }
+        None => return Ok(None),
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    Ok((!text.trim().is_empty()).then_some(text))
+}
+
+fn run_why_not(args: &WhyNotArgs) -> Result<()> {
+    use skill_lint::whynot;
+
+    let (paths, log, now, budget) = resolve_paths(&args.paths)?;
+    let prompt = read_prompt(args.prompt_file.as_deref())?;
+    let input = paths.input(&args.skill, &log, now, budget, args.paths.max_desc_chars, prompt.as_deref());
+    let diagnosis = whynot::diagnose(&input)?;
+    if args.paths.json {
+        println!("{}", serde_json::to_string_pretty(&diagnosis).context("rendering JSON")?);
+    } else {
+        print!("{}", whynot::render(&diagnosis));
+    }
+    Ok(())
+}
+
+fn run_misses(args: &MissesArgs) -> Result<()> {
+    use skill_lint::misses::{self, MissInput};
+    use skill_lint::usage::Window;
+    use skill_lint::whynot::{self, Severity};
+
+    let label = if args.window.bytes().all(|b| b.is_ascii_digit()) && !args.window.is_empty() { format!("{}d", args.window) } else { args.window.clone() };
+    let window: Window = label.parse().map_err(anyhow::Error::msg)?;
+    let (paths, log, now, budget) = resolve_paths(&args.paths)?;
+    let max_desc = args.paths.max_desc_chars;
+    let mut classify = |skill: &str| -> Option<String> {
+        let input = paths.input(skill, &log, now, budget, max_desc, None);
+        let (reasons, _, _) = whynot::structural(&input).ok()?;
+        reasons
+            .iter()
+            .find(|r| r.severity != Severity::Advisory && !matches!(r.class, whynot::Class::MapIntegrity))
+            .map(|r| r.class.as_str().to_owned())
+    };
+    let report = misses::misses(&MissInput { log: &log, now, window, window_label: &label }, &mut classify)?;
+    if args.paths.json {
+        println!("{}", serde_json::to_string_pretty(&report).context("rendering JSON")?);
+    } else {
+        print!("{}", misses::render(&report));
+    }
+    Ok(())
 }
 
 /// The `usage report` subcommand.

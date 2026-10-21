@@ -1,0 +1,12 @@
+why-not dropped
+  deployed: $FIX/deployed/dropped/SKILL.md
+  source:   $FIX/ws/blackmatter-fixture/skills/dropped/SKILL.md
+
+1. [likely] dropped_by_budget
+   evidence: listing is 219 chars against a 218 budget; 1 description(s) are dropped, least used first, and this skill is number 1 with 0 use(s) in 30d
+   fix:      free 1 chars: retire or shorten skills earlier in the drop order (skill-lint usage report --skills-dir $FIX/deployed), or invoke this skill so it ranks higher
+
+prompt match: not run (no prompt given; pass --prompt-file or pipe stdin)
+
+routing surface: metadata.domain_keywords is read by no hook or router: 0 of 1 source files under the scanned roots mention it, so it never reaches the model; the listing carries name plus description
+  scanned 1 files under $FIX/router

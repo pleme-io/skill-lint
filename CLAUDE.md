@@ -277,3 +277,51 @@ tool count (unknown last) with their last use ever.
 - **Tool counts:** nothing on disk lists a server's tools, so `--tools` takes a
   file of `mcp__<server>__<tool>` names (whitespace-separated or a JSON array;
   anything else is ignored), such as a pasted deferred-tool listing.
+
+## `why-not` and `usage misses` — remediating a skill that did not fire
+
+```
+skill-lint why-not --skill <name> [--prompt-file F | stdin] [--json]
+skill-lint usage misses [--window 30|30d|all] [--json]
+```
+
+**What reaches the model.** The listing carries name plus description (see
+`budget`). `metadata.domain_keywords` is read by no hook or router: `why-not`
+scans the claude, pleme and nix repos for a reader on every run and prints the
+denominator (measured 2026-10-21: 0 of 18,864 source files). Keywords score
+separately as "invisible to the model"; only name and description count toward
+the score, so a keyword suggestion is documentation, never a routing fix.
+
+**Checks, ranked blocking, likely, advisory:** `not_deployed` (absent or
+dangling under the deployed home), `stale_deploy` (deployed text differs from
+source: a push without a rebuild; content is compared, because store files carry
+no useful mtime), `frontmatter_invalid` (parse, description present, 60-char cap,
+no first or second person, name equals directory), `user_only`
+(`disable-model-invocation`; `allowed-tools` alone never blocks), `dropped_by_budget`
+(inside `usage report`'s drop order), `description_truncated`, `shadowed`
+(project scope, a second source home, a same-named plugin skill), `map_integrity`
+(entry, domain, references, dead body links), `body_over_cap` (12,000 bytes),
+and with a prompt `outranked` and `lexical_gap`.
+
+**The score** (`route.rs`). Terms: lowercase alphanumeric words of 3 to 24
+chars, stopwords dropped, plural `s`/`ies`/`es` stemmed. Weight: idf =
+ln(1 + N/df) over the deployed skills. Score in 0..1000 = weight of the prompt's
+known terms found in the skill's name or description, divided by the weight of
+all known terms. A skill is a candidate with at least 2 matched terms; strong
+means 400 or more. Terms no skill mentions are ignored in the denominator and
+offered as candidate trigger terms when another skill knows them.
+
+**Privacy.** The prompt is read for scoring and never stored. Whitespace tokens
+that look like secrets (known prefixes, 20+ chars mixing character classes, long
+hex) are dropped before scoring. `usage record` appends one extra line per
+prompt: `ts`, `event`, `id` (hash of session, time, nonce: no prompt bytes),
+`session_id`, and the top 3 `{skill, permille}`. Whether a skill followed is
+computed at read time: a skill line in the same session before the next prompt.
+`--no-prompts` turns the line off. Tests: `tests/prompts.rs`.
+
+**`usage misses`** lists prompts with a strong candidate and no skill fired,
+grouped by skill, with a miss rate and the dominant class: a structural class
+from `why-not` (`not_deployed`, `dropped_by_budget`, `stale_deploy`, ...), else
+`outranked` (a higher candidate in the logged top 3), `lexical_gap` (score under
+500), else `unexplained` (the lexical match was strong and the model still did
+not invoke it).

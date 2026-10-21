@@ -200,7 +200,7 @@ pub fn report(input: McpReportInput<'_>) -> anyhow::Result<McpReport> {
         lines_read += 1;
         let (rec, ts) = match usage::parse_line(line) {
             Parsed::Mcp(rec, ts) => (rec, ts),
-            Parsed::Skill(..) => {
+            Parsed::Skill(..) | Parsed::Prompt => {
                 skill_lines += 1;
                 continue;
             }

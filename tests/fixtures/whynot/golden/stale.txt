@@ -1,0 +1,12 @@
+why-not stale
+  deployed: $FIX/deployed/stale/SKILL.md
+  source:   $FIX/ws/blackmatter-fixture/skills/stale/SKILL.md
+
+1. [likely] stale_deploy
+   evidence: deployed copy differs from $FIX/ws/blackmatter-fixture/skills/stale/SKILL.md (first difference at line 8): a push without a rebuild
+   fix:      cd $FIX/ws/nix && nix flake update blackmatter-fixture && nix run .#rebuild
+
+prompt match: not run (no prompt given; pass --prompt-file or pipe stdin)
+
+routing surface: metadata.domain_keywords is read by no hook or router: 0 of 1 source files under the scanned roots mention it, so it never reaches the model; the listing carries name plus description
+  scanned 1 files under $FIX/router

@@ -102,11 +102,28 @@ impl Origin {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Candidate {
+    pub skill: String,
+    pub permille: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptRecord {
+    pub ts: String,
+    pub event: String,
+    pub id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub candidates: Vec<Candidate>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LogLine {
     Skill(UsageRecord),
     Mcp(McpRecord),
+    Prompt(PromptRecord),
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -213,6 +230,15 @@ pub fn parse_rfc3339(ts: &str) -> Option<i64> {
     Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
 }
 
+/// Sub-second clock plus pid: distinguishes two prompts in one second.
+#[must_use]
+pub fn nonce() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::from(d.subsec_nanos()));
+    (nanos << 20) ^ u64::from(std::process::id())
+}
+
 /// Seconds since the Unix epoch, now.
 #[must_use]
 pub fn now_secs() -> i64 {
@@ -269,6 +295,7 @@ pub struct RecordEnv<'a> {
     /// Deployed skills, for validating a typed `/<name>`.
     pub skills_dir: Option<&'a Path>,
     pub now: i64,
+    pub nonce: u64,
 }
 
 /// A skill name as typed or passed: one token, no path separators, never `.`
@@ -348,6 +375,49 @@ pub fn record(input: &[u8], env: &RecordEnv<'_>) -> Option<LogLine> {
         origin: Origin::of(&event),
         tool_input,
     }))
+}
+
+fn fnv1a(parts: &[&[u8]]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for b in *part {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h ^= 0xff;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// The prompt line a `UserPromptSubmit` event yields: top candidates and their
+/// scores, a session id and an id derived from session, time and nonce. The
+/// prompt text is read for scoring and never leaves this function.
+#[must_use]
+pub fn prompt_line(input: &[u8], env: &RecordEnv<'_>) -> Option<LogLine> {
+    let event: Value = serde_json::from_slice(input).ok()?;
+    if event.get("tool_name").is_some() || str_field(&event, "hook_event_name").is_some_and(|e| e != "UserPromptSubmit") {
+        return None;
+    }
+    let prompt = event.get("prompt")?.as_str()?;
+    let docs = crate::route::load_home(env.skills_dir?);
+    if docs.is_empty() {
+        return None;
+    }
+    let candidates: Vec<Candidate> = crate::route::candidates(&crate::route::Corpus::build(&docs), prompt)
+        .into_iter()
+        .map(|s| Candidate { skill: s.skill, permille: s.permille })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let session_id = str_field(&event, "session_id");
+    let ts = format_rfc3339(env.now);
+    let id = format!(
+        "{:016x}",
+        fnv1a(&[session_id.as_deref().unwrap_or("").as_bytes(), ts.as_bytes(), &env.nonce.to_le_bytes()])
+    );
+    Some(LogLine::Prompt(PromptRecord { ts, event: "UserPromptSubmit".to_owned(), id, session_id, candidates }))
 }
 
 /// Append one line to `log`, creating its directory. One `write` call on an
@@ -433,6 +503,7 @@ pub struct UsageReport {
 pub(crate) enum Parsed {
     Skill(UsageRecord, i64),
     Mcp(McpRecord, i64),
+    Prompt,
     Malformed,
 }
 
@@ -440,6 +511,7 @@ pub(crate) fn parse_line(line: &str) -> Parsed {
     match serde_json::from_str::<LogLine>(line) {
         Ok(LogLine::Skill(rec)) => parse_rfc3339(&rec.ts).map_or(Parsed::Malformed, |ts| Parsed::Skill(rec, ts)),
         Ok(LogLine::Mcp(rec)) => parse_rfc3339(&rec.ts).map_or(Parsed::Malformed, |ts| Parsed::Mcp(rec, ts)),
+        Ok(LogLine::Prompt(rec)) => parse_rfc3339(&rec.ts).map_or(Parsed::Malformed, |_| Parsed::Prompt),
         Err(_) => Parsed::Malformed,
     }
 }
@@ -495,6 +567,7 @@ pub fn report(input: &ReportInput<'_>) -> anyhow::Result<UsageReport> {
                 mcp_lines += 1;
                 continue;
             }
+            Parsed::Prompt => continue,
             Parsed::Malformed => {
                 malformed_lines += 1;
                 continue;
@@ -649,7 +722,7 @@ mod tests {
 
     #[test]
     fn a_post_tool_use_skill_event_is_not_counted_twice() {
-        let env = RecordEnv { skills_dir: None, now: 0 };
+        let env = RecordEnv { skills_dir: None, now: 0, nonce: 0 };
         let pre = json!({"hook_event_name": "PreToolUse", "tool_name": "Skill", "tool_input": {"skill": "a"}});
         let post = json!({"hook_event_name": "PostToolUse", "tool_name": "Skill", "tool_input": {"skill": "a"}});
         assert!(record(pre.to_string().as_bytes(), &env).is_some());
@@ -658,7 +731,7 @@ mod tests {
 
     #[test]
     fn a_slash_prompt_without_a_skills_dir_records_nothing() {
-        let env = RecordEnv { skills_dir: None, now: 0 };
+        let env = RecordEnv { skills_dir: None, now: 0, nonce: 0 };
         let ev = json!({"hook_event_name": "UserPromptSubmit", "prompt": "/a"});
         assert!(record(ev.to_string().as_bytes(), &env).is_none());
     }
@@ -670,5 +743,72 @@ mod tests {
         let got = default_log_path(Some("/x".into()), Some("/h".into()));
         assert_eq!(got, Some(PathBuf::from("/x/skill-lint/usage.jsonl")));
         assert_eq!(default_log_path(None, None), None);
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    fn home() -> TempDir {
+        let d = TempDir::new().unwrap();
+        for (n, desc) in [("helm", "Create Helm charts and releases"), ("rusty", "Rust binary or library tool")] {
+            std::fs::create_dir_all(d.path().join(n)).unwrap();
+            std::fs::write(d.path().join(n).join("SKILL.md"), format!("---\nname: {n}\ndescription: \"{desc}\"\n---\nb\n")).unwrap();
+        }
+        d
+    }
+
+    fn line(prompt: &str, home: &Path, nonce: u64) -> Option<LogLine> {
+        let ev = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s9", "prompt": prompt});
+        prompt_line(ev.to_string().as_bytes(), &RecordEnv { skills_dir: Some(home), now: 1_790_000_000, nonce })
+    }
+
+    #[test]
+    fn a_prompt_line_carries_top_candidates_and_nothing_else() {
+        let h = home();
+        let Some(LogLine::Prompt(p)) = line("please create helm charts for the release", h.path(), 1) else { panic!("no line") };
+        assert_eq!(p.candidates[0].skill, "helm");
+        assert!(p.candidates.len() <= crate::route::TOP_CANDIDATES);
+        assert_eq!(p.session_id.as_deref(), Some("s9"));
+        assert_eq!(p.id.len(), 16);
+        let text = serde_json::to_string(&p).unwrap();
+        assert!(!text.contains("please") && !text.contains("charts for"), "{text}");
+    }
+
+    #[test]
+    fn the_id_differs_per_nonce_and_is_stable_for_one() {
+        let h = home();
+        let id = |n| match line("create helm charts releases", h.path(), n) {
+            Some(LogLine::Prompt(p)) => p.id,
+            _ => panic!(),
+        };
+        assert_eq!(id(1), id(1));
+        assert_ne!(id(1), id(2));
+    }
+
+    #[test]
+    fn a_prompt_matching_nothing_writes_nothing() {
+        assert!(line("hello there", home().path(), 1).is_none());
+    }
+
+    #[test]
+    fn a_tool_event_or_another_hook_event_is_not_a_prompt() {
+        let h = home();
+        let env = RecordEnv { skills_dir: Some(h.path()), now: 0, nonce: 0 };
+        let tool = json!({"hook_event_name": "PreToolUse", "tool_name": "Skill", "prompt": "create helm charts releases"});
+        assert!(prompt_line(tool.to_string().as_bytes(), &env).is_none());
+        let stop = json!({"hook_event_name": "Stop", "prompt": "create helm charts releases"});
+        assert!(prompt_line(stop.to_string().as_bytes(), &env).is_none());
+    }
+
+    #[test]
+    fn a_secret_shaped_token_cannot_reach_the_line() {
+        let h = home();
+        let token = concat!("ghp", "_FAKEFAKEFAKEFAKEFAKEFAKEFAKE0123456789");
+        let l = line(&format!("create helm charts releases with {token}"), h.path(), 3).unwrap();
+        assert!(!serde_json::to_string(&l).unwrap().contains("FAKEFAKE"));
     }
 }

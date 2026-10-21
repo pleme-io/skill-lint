@@ -1,0 +1,49 @@
+ghost:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [ghost]
+  references: []
+
+dropped:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [dropped]
+  references: []
+
+busy:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [busy]
+  references: []
+
+gap:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [gap]
+  references: []
+
+rival:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [rival]
+  references: []
+
+outranked:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [outranked]
+  references: []
+
+stale:
+  description: fixture skill
+  domain: meta
+  repo: blackmatter-fixture
+  concerns: [stale]
+  references: []
+

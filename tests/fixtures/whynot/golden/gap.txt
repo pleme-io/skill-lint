@@ -1,0 +1,21 @@
+why-not gap
+  deployed: $FIX/deployed/gap/SKILL.md
+  source:   $FIX/ws/blackmatter-fixture/skills/gap/SKILL.md
+
+1. [likely] outranked
+   evidence: rival scores 1000/1000 against this skill's 0/1000; it has terms this skill lacks: charts, create, helm, kubernetes, release
+   fix:      in $FIX/ws/blackmatter-fixture/skills/gap/SKILL.md add to the description: helm, kubernetes, release, charts (34 chars of room); also list helm, kubernetes, release, charts, create under metadata.domain_keywords (documentation only: no hook reads it)
+
+2. [likely] lexical_gap
+   evidence: name and description cover 0/1000 of the prompt's term weight; missing: helm, kubernetes, release, charts, create
+   fix:      in $FIX/ws/blackmatter-fixture/skills/gap/SKILL.md add to the description: helm, kubernetes, release, charts (34 chars of room); also list helm, kubernetes, release, charts, create under metadata.domain_keywords (documentation only: no hook reads it)
+
+prompt match (name + description; 5 prompt terms, 5 known to some skill)
+  score 0/1000, rank 5 of 6; matched: (none)
+  outranked by rival (1000/1000) via charts, create, helm, kubernetes, release
+  outranked by outranked (322/1000) via charts, create
+  candidate trigger terms: helm, kubernetes, release, charts, create
+  description: 26/60 chars, 34 free
+
+routing surface: metadata.domain_keywords is read by no hook or router: 0 of 1 source files under the scanned roots mention it, so it never reaches the model; the listing carries name plus description
+  scanned 1 files under $FIX/router

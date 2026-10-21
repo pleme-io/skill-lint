@@ -5,10 +5,13 @@ pub mod claudemd;
 pub mod error;
 pub mod markdown;
 pub mod mcp;
+pub mod misses;
 pub mod model;
 pub mod procedure;
+pub mod route;
 pub mod ratchet;
 pub mod usage;
+pub mod whynot;
 pub mod workflows;
 
 // Re-export key types for downstream consumers

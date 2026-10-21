@@ -1,0 +1,12 @@
+why-not ghost
+  deployed: no
+  source:   $FIX/ws/blackmatter-fixture/skills/ghost/SKILL.md
+
+1. [BLOCKING] not_deployed
+   evidence: $FIX/deployed/ghost/SKILL.md is absent; the source exists at $FIX/ws/blackmatter-fixture/skills/ghost/SKILL.md
+   fix:      cd $FIX/ws/nix && nix flake update blackmatter-fixture && nix run .#rebuild
+
+prompt match: not run (no prompt given; pass --prompt-file or pipe stdin)
+
+routing surface: metadata.domain_keywords is read by no hook or router: 0 of 1 source files under the scanned roots mention it, so it never reaches the model; the listing carries name plus description
+  scanned 1 files under $FIX/router

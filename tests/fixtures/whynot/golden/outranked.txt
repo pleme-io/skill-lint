@@ -1,0 +1,20 @@
+why-not outranked
+  deployed: $FIX/deployed/outranked/SKILL.md
+  source:   $FIX/ws/blackmatter-fixture/skills/outranked/SKILL.md
+
+1. [likely] outranked
+   evidence: rival scores 1000/1000 against this skill's 322/1000; it has terms this skill lacks: helm, kubernetes, release
+   fix:      in $FIX/ws/blackmatter-fixture/skills/outranked/SKILL.md add to the description: helm, kubernetes, release (47 chars of room); also list helm, kubernetes, release under metadata.domain_keywords (documentation only: no hook reads it)
+
+2. [likely] lexical_gap
+   evidence: name and description cover 322/1000 of the prompt's term weight; missing: helm, kubernetes, release
+   fix:      in $FIX/ws/blackmatter-fixture/skills/outranked/SKILL.md add to the description: helm, kubernetes, release (47 chars of room); also list helm, kubernetes, release under metadata.domain_keywords (documentation only: no hook reads it)
+
+prompt match (name + description; 5 prompt terms, 5 known to some skill)
+  score 322/1000, rank 2 of 6; matched: charts, create
+  outranked by rival (1000/1000) via helm, kubernetes, release
+  candidate trigger terms: helm, kubernetes, release
+  description: 13/60 chars, 47 free
+
+routing surface: metadata.domain_keywords is read by no hook or router: 0 of 1 source files under the scanned roots mention it, so it never reaches the model; the listing carries name plus description
+  scanned 1 files under $FIX/router

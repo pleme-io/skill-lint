@@ -1,0 +1,13 @@
+why-not rival
+  deployed: $FIX/deployed/rival/SKILL.md
+  source:   $FIX/ws/blackmatter-fixture/skills/rival/SKILL.md
+
+no reason found: the skill is deployed, valid, listed and (if a prompt was given) the best lexical match
+
+prompt match (name + description; 5 prompt terms, 5 known to some skill)
+  score 1000/1000, rank 1 of 6; matched: charts, create, helm, kubernetes, release
+  candidate trigger terms: (none)
+  description: 46/60 chars, 14 free
+
+routing surface: metadata.domain_keywords is read by no hook or router: 0 of 1 source files under the scanned roots mention it, so it never reaches the model; the listing carries name plus description
+  scanned 1 files under $FIX/router

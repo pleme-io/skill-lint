@@ -56,6 +56,8 @@ pub struct SkillMetadata {
     pub version: Option<String>,
     /// ISO-8601 date when the skill was last reviewed.
     pub last_verified: Option<String>,
+    #[serde(default)]
+    pub domain_keywords: Vec<String>,
 }
 
 impl SkillFrontmatter {
