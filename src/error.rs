@@ -297,6 +297,27 @@ pub enum LintError {
         over: usize,
     },
 
+    #[error("[{kind}] {scope} {key} measures {bytes} B and the ledger has no row for it — an unmeasured scope is an infinite ceiling. Record it on purpose with --write-baseline, or waive it in the --waivers file with a reason.")]
+    ChainUnrecorded { kind: CheckKind, scope: String, key: String, bytes: usize },
+
+    #[error("[{kind}] {scope} {key} grew {recorded} -> {bytes} B (+{grew}). Shrink it, or raise its ledger row by hand with `why: {key} = <receipt>` naming a world-fact or a measured A/B.")]
+    ChainGrew { kind: CheckKind, scope: String, key: String, bytes: usize, recorded: usize, grew: usize },
+
+    #[error("[{kind}] {scope} {key} shrank {recorded} -> {bytes} B (-{freed}), past the {headroom} B headroom, and the ledger still records {recorded}. Bank it with --write-baseline so the freed bytes cannot be re-spent in silence.")]
+    ChainUnbanked { kind: CheckKind, scope: String, key: String, bytes: usize, recorded: usize, freed: usize, headroom: usize },
+
+    #[error("[{kind}] ledger line {line}: `why: {key}` carries no receipt. A raised row names the world-fact or the measured A/B that justifies it: `why: {key} = <receipt>`.")]
+    ChainWhyEmpty { kind: CheckKind, line: usize, key: String },
+
+    #[error("[{kind}] ledger line {line}: `why: {key}` names no session or file row in the ledger.")]
+    ChainWhyDangling { kind: CheckKind, line: usize, key: String },
+
+    #[error("[{kind}] {scope} {key} was raised {previous} -> {recorded} B against the previous ledger with no `why: {key} = <receipt>` line.")]
+    ChainRaisedWithoutWhy { kind: CheckKind, scope: String, key: String, previous: usize, recorded: usize },
+
+    #[error("[{kind}] waivers line {line}: `{text}` is not `skip-context-budget: <key> <reason>` with a non-empty reason.")]
+    ChainWaiverMalformed { kind: CheckKind, line: usize, text: String },
+
     #[error("[{kind}] skill directory '{name}' has no entry in skill-map.yaml")]
     MissingMapEntry { kind: CheckKind, name: String },
 
@@ -452,6 +473,13 @@ impl LintError {
             | Self::ImportTooDeep { kind, .. }
             | Self::ChainTooLarge { kind, .. }
             | Self::ChainFileTooLarge { kind, .. }
+            | Self::ChainUnrecorded { kind, .. }
+            | Self::ChainGrew { kind, .. }
+            | Self::ChainUnbanked { kind, .. }
+            | Self::ChainWhyEmpty { kind, .. }
+            | Self::ChainWhyDangling { kind, .. }
+            | Self::ChainRaisedWithoutWhy { kind, .. }
+            | Self::ChainWaiverMalformed { kind, .. }
             | Self::MissingMapEntry { kind, .. }
             | Self::OrphanMapEntry { kind, .. }
             | Self::MissingFrontmatter { kind, .. }

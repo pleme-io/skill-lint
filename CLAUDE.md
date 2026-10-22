@@ -198,6 +198,41 @@ the total is a ceiling); `.claude/rules/`.
 `total_bytes`, the ceilings, `files` (`path`, `bytes`, `depth`, `origin` —
 `global` / `chain` / `import` — `imported_by`, `line`), `cycles` and `errors`.
 
+### The ledger — a byte gate is a ratchet
+
+A fixed per-session ceiling covers only the directories someone listed: blue
+loaded 78,020 B with a 28,952 B `CLAUDE.md` (2026-10-22) and no gate measured
+it. With `--baseline` / `--write-baseline` the ceiling is the recorded
+measurement per scope, and coverage is discovered, not listed:
+
+```
+skill-lint chain --home H --sessions-under H --max-file-bytes 25000 \
+  --baseline L [--waivers W] [--previous OLD] [--bank-headroom 2048]
+```
+
+- `--sessions-under R`: R plus every directory under it with a chain file
+  (hidden, `target*`, `result*`, `node_modules` not walked). Repeatable, and
+  combines with `--dir`.
+- Ledger rows, one ratchet each (`crate::ratchet`, which is `joeira-ratchet`):
+  `session: <dir> <bytes>` for every session, `file: <path> <bytes>` for every
+  file over `--max-file-bytes` (recorded debt that may only shrink).
+- Verdicts: **Unrecorded** (no row: red; a new scope is recorded on purpose),
+  **Grew** (red), **Held**, **Shrunk** within `--bank-headroom` (green, reported),
+  **Unbanked** shrink past the headroom (red: bank it), **orphan** row for a
+  scope gone (advisory, never red).
+- `--write-baseline` only lowers: new scopes recorded, shrinks banked, paid file
+  debt and orphans dropped, a grown row kept (still red). A raise is a hand edit
+  with `why: <key> = <receipt>` naming a world-fact or a `merlin` A/B; an empty
+  or dangling `why` is refused, and `--previous OLD` refuses any row raised
+  against OLD without one. That a receipt is true is review, not a check.
+- `--waivers W`: `skip-context-budget: <key> <reason>` excludes a session and
+  everything under it; no reason is refused.
+- With a ledger, `--max-file-bytes` selects file debt instead of failing; the
+  per-session ceiling is the ledger. `--max-bytes` stays for a world-fact cap.
+
+The fleet ledger is `nix/parts/context-budget.baseline`, run by the nix repo's
+`context-budget` check and tightened by `nix run .#context-budget-tighten`.
+
 ## `usage` — which skills are actually invoked
 
 `budget` will not guess which descriptions the platform drops on overflow: that

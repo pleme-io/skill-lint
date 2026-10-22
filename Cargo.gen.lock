@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "d1754e7f3f4d886debd11dc598cf1202cd7a3a83766f99218d4346b173f0cded",
+  "cargo_lock_sha256": "4e026b9a7787dc685709e6a5525abad04f07894a80b78f467ac7611d17cd6b07",
   "manifest_sha256": {
-    "Cargo.toml": "495282a4393cf48fd4caac66a19d8d160c040307624762a4f73219c1e14db061"
+    "Cargo.toml": "6b4ff5274240d2d0efd038f97cd68c8dfd85e3e7a17855ae8c54c097f5eb77da"
   },
   "target_resolves": {
     "base": {
@@ -625,6 +625,11 @@
         "build_dependencies": [],
         "features": []
       },
+      "joeira-ratchet-0.1.13": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
       "libc-0.2.191": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -1177,6 +1182,16 @@
             "features": [
               "derive"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "joeira_ratchet",
+            "package_key": "joeira-ratchet-0.1.13",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -2151,6 +2166,9 @@
     },
     "itoa-1.0.18": {
       "edition": "2021"
+    },
+    "joeira-ratchet-0.1.13": {
+      "edition": "2024"
     },
     "libc-0.2.191": {
       "edition": "2021",

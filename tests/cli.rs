@@ -1163,3 +1163,72 @@ fn chain_fails_over_either_ceiling_and_passes_under_both() {
         .success()
         .stderr(predicate::str::contains("all checks passed"));
 }
+
+fn ledger_home() -> (TempDir, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    for dir in ["code/org/a", "code/org/b", "code/org/vendored"] {
+        fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    fs::write(home.join("CLAUDE.md"), "home\n").unwrap();
+    fs::write(home.join("code/org/a/CLAUDE.md"), "a".repeat(40)).unwrap();
+    fs::write(home.join("code/org/b/CLAUDE.md"), "b".repeat(10)).unwrap();
+    fs::write(home.join("code/org/vendored/CLAUDE.md"), "v").unwrap();
+    (tmp, home)
+}
+
+fn ledger_run(home: &std::path::Path, extra: &[&str]) -> assert_cmd::assert::Assert {
+    let mut args: Vec<String> = vec![
+        "chain".into(),
+        "--home".into(),
+        home.display().to_string(),
+        "--sessions-under".into(),
+        home.display().to_string(),
+        "--max-file-bytes".into(),
+        "30".into(),
+    ];
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+    Command::cargo_bin("skill-lint").unwrap().args(&args).assert()
+}
+
+#[test]
+fn chain_ledger_records_every_discovered_session_then_gates_growth_and_banks_shrink() {
+    let (_tmp, home) = ledger_home();
+    let ledger = home.join("ledger");
+    let ledger_s = ledger.display().to_string();
+
+    ledger_run(&home, &["--baseline", &ledger_s]).failure();
+    ledger_run(&home, &["--write-baseline", &ledger_s]).success();
+    let text = fs::read_to_string(&ledger).unwrap();
+    for row in ["session: ~ 5", "session: ~/code/org/a 45", "session: ~/code/org/b 15", "file: ~/code/org/a/CLAUDE.md 40"] {
+        assert!(text.contains(row), "{row} missing:\n{text}");
+    }
+    ledger_run(&home, &["--baseline", &ledger_s]).success();
+
+    fs::write(home.join("code/org/b/CLAUDE.md"), "b".repeat(11)).unwrap();
+    ledger_run(&home, &["--baseline", &ledger_s]).failure().stderr(predicate::str::contains("grew 15 -> 16"));
+    fs::write(home.join("code/org/b/CLAUDE.md"), "b".repeat(10)).unwrap();
+
+    fs::write(home.join("code/org/a/CLAUDE.md"), "a".repeat(38)).unwrap();
+    ledger_run(&home, &["--baseline", &ledger_s, "--bank-headroom", "2"]).success().stdout(predicate::str::contains("shrunk"));
+    fs::write(home.join("code/org/a/CLAUDE.md"), "a".repeat(37)).unwrap();
+    ledger_run(&home, &["--baseline", &ledger_s, "--bank-headroom", "2"])
+        .failure()
+        .stderr(predicate::str::contains("past the 2 B headroom"));
+    ledger_run(&home, &["--baseline", &ledger_s, "--write-baseline", &ledger_s]).success();
+    assert!(fs::read_to_string(&ledger).unwrap().contains("file: ~/code/org/a/CLAUDE.md 37"));
+
+    fs::create_dir_all(home.join("code/org/new")).unwrap();
+    fs::write(home.join("code/org/new/CLAUDE.md"), "n").unwrap();
+    ledger_run(&home, &["--baseline", &ledger_s]).failure().stderr(predicate::str::contains("no row for it"));
+    let waivers = home.join("waivers");
+    fs::write(&waivers, "skip-context-budget: ~/code/org/new scratch checkout, never a session\n").unwrap();
+    ledger_run(&home, &["--baseline", &ledger_s, "--waivers", &waivers.display().to_string()])
+        .success()
+        .stdout(predicate::str::contains("waived"));
+
+    fs::remove_dir_all(home.join("code/org/vendored")).unwrap();
+    ledger_run(&home, &["--baseline", &ledger_s, "--waivers", &waivers.display().to_string()])
+        .success()
+        .stdout(predicate::str::contains("orphan"));
+}

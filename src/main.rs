@@ -252,8 +252,40 @@ enum Command {
     Chain {
         /// A session directory. Repeat for each; each is its own session with
         /// its own total.
-        #[arg(long = "dir", required = true)]
+        #[arg(long = "dir", required_unless_present = "sessions_under")]
         dirs: Vec<PathBuf>,
+
+        /// Every directory under this root holding a `CLAUDE.md`,
+        /// `.claude/CLAUDE.md` or `CLAUDE.local.md` is a session, and so is the
+        /// root. Repeatable.
+        /// Hidden, `target*`, `result*` and `node_modules` directories are not walked.
+        #[arg(long = "sessions-under")]
+        sessions_under: Vec<PathBuf>,
+
+        /// The ledger: `session: <key> <bytes>` per session, `file: <key>
+        /// <bytes>` per file over --max-file-bytes, `why: <key> = <receipt>` per
+        /// raised row. Growth, an unrecorded scope and a shrink past
+        /// --bank-headroom left unbanked fail; rows for scopes gone are advisory.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Write the tightened ledger here: rows only go down, new scopes are
+        /// recorded, paid debt and gone scopes are dropped.
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+
+        /// The previous ledger: any row raised against it must carry a `why:`.
+        #[arg(long)]
+        previous: Option<PathBuf>,
+
+        /// Scopes deliberately not measured: `skip-context-budget: <key> <reason>`.
+        #[arg(long)]
+        waivers: Option<PathBuf>,
+
+        /// Bytes a row may sit above its measurement before the unbanked shrink
+        /// fails the run.
+        #[arg(long, default_value_t = skill_lint::chain_ledger::DEFAULT_BANK_HEADROOM)]
+        bank_headroom: usize,
 
         /// `$HOME`: the top of the walk and the base of `~/` imports.
         /// Defaults to the `HOME` environment variable.
@@ -598,8 +630,22 @@ fn main() -> Result<()> {
             run_workflows(&files, max_run_lines, baseline.as_deref(), write_baseline.as_deref(), top)
         }
 
-        Command::Chain { dirs, home, global, max_bytes, max_file_bytes, json } => {
-            run_chain(&dirs, home, global, max_bytes, max_file_bytes, json)
+        Command::Chain {
+            dirs,
+            sessions_under,
+            baseline,
+            write_baseline,
+            previous,
+            waivers,
+            bank_headroom,
+            home,
+            global,
+            max_bytes,
+            max_file_bytes,
+            json,
+        } => {
+            let ledger = LedgerArgs { baseline, write_baseline, previous, waivers, bank_headroom };
+            run_chain(&dirs, &sessions_under, &ledger, home, global, max_bytes, max_file_bytes, json)
         }
 
         Command::Usage { action: UsageAction::Report(args) } => run_usage_report(&args),
@@ -1357,9 +1403,54 @@ fn run_workflows(
     Ok(())
 }
 
-/// The `chain` subcommand.
+struct LedgerArgs {
+    baseline: Option<PathBuf>,
+    write_baseline: Option<PathBuf>,
+    previous: Option<PathBuf>,
+    waivers: Option<PathBuf>,
+    bank_headroom: usize,
+}
+
+impl LedgerArgs {
+    const fn active(&self) -> bool { self.baseline.is_some() || self.write_baseline.is_some() }
+}
+
+fn read_ledger(path: Option<&std::path::Path>) -> Result<(skill_lint::chain_ledger::Ledger, Vec<skill_lint::LintError>)> {
+    match path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| format!("reading ledger {}", path.display()))?;
+            Ok(skill_lint::chain_ledger::Ledger::parse(&text))
+        }
+        None => Ok((skill_lint::chain_ledger::Ledger::default(), Vec::new())),
+    }
+}
+
+fn chain_session_dirs(dirs: &[PathBuf], roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for dir in dirs {
+        let dir = std::fs::canonicalize(dir).with_context(|| format!("resolving --dir {}", dir.display()))?;
+        if seen.insert(dir.clone()) {
+            out.push(dir);
+        }
+    }
+    for root in roots {
+        let root =
+            std::fs::canonicalize(root).with_context(|| format!("resolving --sessions-under {}", root.display()))?;
+        for dir in skill_lint::sessions::sessions_under(&root) {
+            if seen.insert(dir.clone()) {
+                out.push(dir);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_chain(
     dirs: &[PathBuf],
+    roots: &[PathBuf],
+    ledger_args: &LedgerArgs,
     home: Option<PathBuf>,
     global: Option<PathBuf>,
     max_bytes: Option<usize>,
@@ -1367,26 +1458,136 @@ fn run_chain(
     json: bool,
 ) -> Result<()> {
     use skill_lint::chain::{self, ChainConfig, ChainReport, Origin, RealFs, tilde};
+    use skill_lint::chain_ledger::{self, Measured, Scope};
+    use skill_lint::sessions::Waivers;
 
     let home = match home {
         Some(home) => home,
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is unset; pass --home")?),
     };
-    // Canonical, like every session directory, so `starts_with` compares like
-    // with like: a symlinked $HOME must not make a directory under it look
-    // outside it.
     let home = std::fs::canonicalize(&home).with_context(|| format!("resolving --home {}", home.display()))?;
     let global = global.unwrap_or_else(|| home.join(".claude/CLAUDE.md"));
-    let config = ChainConfig { home, global, max_bytes, max_file_bytes };
+    let ledger_mode = ledger_args.active();
+    let file_cap = max_file_bytes;
+    let config = ChainConfig {
+        home,
+        global,
+        max_bytes,
+        max_file_bytes: if ledger_mode { None } else { max_file_bytes },
+    };
 
-    let sessions = dirs
-        .iter()
-        .map(|dir| {
-            let dir = std::fs::canonicalize(dir).with_context(|| format!("resolving --dir {}", dir.display()))?;
-            Ok(chain::resolve(&dir, &RealFs, &config))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut refusals = Vec::new();
+    let waivers = match &ledger_args.waivers {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| format!("reading waivers {}", path.display()))?;
+            let (waivers, errors) = Waivers::parse(&text);
+            refusals.extend(errors);
+            waivers
+        }
+        None => Waivers::default(),
+    };
+
+    let mut waived = Vec::new();
+    let mut sessions = Vec::new();
+    for dir in chain_session_dirs(dirs, roots)? {
+        let key = tilde(&dir, &config.home);
+        match waivers.covering(&key) {
+            Some(entry) => waived.push((key, entry.reason.clone())),
+            None => sessions.push(chain::resolve(&dir, &RealFs, &config)),
+        }
+    }
     let report = ChainReport { sessions };
+
+    if ledger_mode {
+        let (old, errors) = read_ledger(ledger_args.baseline.as_deref())?;
+        refusals.extend(errors);
+        let mut measured = Measured::default();
+        for session in &report.sessions {
+            measured.sessions.insert(tilde(&session.dir, &config.home), session.total_bytes());
+            for file in &session.files {
+                let key = tilde(&file.path, &config.home);
+                if file_cap.is_some_and(|cap| file.bytes > cap) || old.recorded(Scope::File, &key).is_some() {
+                    measured.files.insert(key, file.bytes);
+                }
+            }
+        }
+        if let Some(path) = &ledger_args.previous {
+            let (previous, errors) = read_ledger(Some(path))?;
+            refusals.extend(errors);
+            refusals.extend(chain_ledger::raised_without_why(&previous, &old));
+        }
+        let ledger = match &ledger_args.write_baseline {
+            Some(path) => {
+                let tightened = chain_ledger::tighten(&old, &measured, file_cap);
+                std::fs::write(path, tightened.render())
+                    .with_context(|| format!("writing ledger {}", path.display()))?;
+                eprintln!("wrote ledger {} ({} row(s))", path.display(), tightened.len());
+                tightened
+            }
+            None => old,
+        };
+        let judged = chain_ledger::judge(&ledger, &measured, ledger_args.bank_headroom);
+
+        if json {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&report.to_json(&config).context("rendering JSON")?).context("re-reading JSON")?;
+            value["ledger"] = serde_json::json!({
+                "headroom": ledger_args.bank_headroom,
+                "rows": judged.rows,
+                "orphans": judged.orphans,
+                "waived": waived.iter().map(|(k, r)| serde_json::json!({"key": k, "reason": r})).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&value).context("rendering JSON")?);
+        } else {
+            for row in &judged.rows {
+                let recorded = match row.judgement {
+                    chain_ledger::Judgement::Shrunk { recorded, .. }
+                    | chain_ledger::Judgement::Unbanked { recorded, .. }
+                    | chain_ledger::Judgement::Grew { recorded, .. } => format!("{recorded}"),
+                    chain_ledger::Judgement::Held => format!("{}", row.bytes),
+                    chain_ledger::Judgement::Unrecorded => "-".to_owned(),
+                };
+                println!("{:<10} {:<7} {:>8} B  ledger {:>8}  {}", row.judgement.tag(), row.scope, row.bytes, recorded, row.key);
+            }
+            for orphan in &judged.orphans {
+                println!(
+                    "orphan     {:<7} ledger {} B  {}  (no such scope now; --write-baseline drops it)",
+                    orphan.scope, orphan.recorded, orphan.key
+                );
+            }
+            for (key, reason) in &waived {
+                println!("waived     session  {key}  ({reason})");
+            }
+            let shrunk: usize = judged
+                .rows
+                .iter()
+                .filter_map(|r| match r.judgement {
+                    chain_ledger::Judgement::Shrunk { freed, .. } => Some(freed),
+                    _ => None,
+                })
+                .sum();
+            println!(
+                "{} session(s), {} file row(s), {} orphan(s), {} waived, {shrunk} B shrunk within the {} B headroom",
+                measured.sessions.len(),
+                measured.files.len(),
+                judged.orphans.len(),
+                waived.len(),
+                ledger_args.bank_headroom
+            );
+        }
+
+        let errors: Vec<&skill_lint::LintError> =
+            refusals.iter().chain(report.errors()).chain(judged.errors.iter()).collect();
+        if errors.is_empty() {
+            eprintln!("skill-lint chain: all checks passed ({} session(s) against the ledger)", report.sessions.len());
+            return Ok(());
+        }
+        eprintln!("skill-lint chain: {} error(s):", errors.len());
+        for err in errors {
+            eprintln!("  - {err}");
+        }
+        process::exit(1);
+    }
 
     if json {
         println!("{}", report.to_json(&config).context("rendering JSON")?);
@@ -1429,13 +1630,13 @@ fn run_chain(
     }
 
     let files: usize = report.sessions.iter().map(|s| s.files.len()).sum();
-    if report.is_ok() {
+    if report.is_ok() && refusals.is_empty() {
         eprintln!(
             "skill-lint chain: all checks passed ({} session(s), {files} file load(s))",
             report.sessions.len()
         );
     } else {
-        let errors: Vec<_> = report.errors().collect();
+        let errors: Vec<_> = refusals.iter().chain(report.errors()).collect();
         eprintln!("skill-lint chain: {} error(s):", errors.len());
         for err in errors {
             eprintln!("  - {err}");

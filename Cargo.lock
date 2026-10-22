@@ -240,6 +240,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "joeira-ratchet"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b221dfa79b89cb4d2d0d360d5d4ad450de09b522d39822ea9bcf06a327c4e6af"
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -449,6 +455,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "joeira-ratchet",
  "predicates",
  "serde",
  "serde_json",

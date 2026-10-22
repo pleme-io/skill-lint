@@ -1,5 +1,6 @@
 pub mod budget;
 pub mod chain;
+pub mod chain_ledger;
 pub mod check;
 pub mod claudemd;
 pub mod error;
@@ -10,6 +11,7 @@ pub mod model;
 pub mod procedure;
 pub mod route;
 pub mod ratchet;
+pub mod sessions;
 pub mod usage;
 pub mod whynot;
 pub mod workflows;
