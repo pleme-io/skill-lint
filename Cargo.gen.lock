@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "2f910f1c903bacc1f56d63f07f3f37c69b2f633df8dff397b606bf58aee0a9ec",
+  "cargo_lock_sha256": "8ebc826c2114dae352c0ab3e924735c9ac62e2d3112add4153ddec426ad0d0f6",
   "manifest_sha256": {
-    "Cargo.toml": "3cf669c8028077b382c49235ba18d2f8e746b7a2f1cb7ffa23a8a0f8d998fa23"
+    "Cargo.toml": "c38485906cae7f27084c1534700d33f1ad68567fc0c3fa93d446aa0410c47b3b"
   },
   "target_resolves": {
     "base": {
@@ -375,7 +375,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "full"
@@ -620,12 +620,12 @@
           "default"
         ]
       },
-      "itoa-1.0.18": {
+      "itoa-1.0.19": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
-      "joeira-ratchet-0.1.13": {
+      "joeira-ratchet-0.1.16": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -1038,7 +1038,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -1062,7 +1062,7 @@
         "runtime_dependencies": [
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1121,7 +1121,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1163,7 +1163,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "skill-lint-0.1.14": {
+      "skill-lint-0.1.15": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -1189,7 +1189,7 @@
           },
           {
             "name": "joeira_ratchet",
-            "package_key": "joeira-ratchet-0.1.13",
+            "package_key": "joeira-ratchet-0.1.16",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1248,7 +1248,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "syn-3.0.9": {
+      "syn-3.0.10": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1328,7 +1328,7 @@
           },
           {
             "name": "rustix",
-            "package_key": "rustix-1.1.5",
+            "package_key": "rustix-1.1.6",
             "kind": "normal",
             "features": [
               "fs"
@@ -1393,7 +1393,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1447,7 +1447,7 @@
     "targets": {
       "aarch64-apple-darwin": {
         "overrides": {
-          "rustix-1.1.5": {
+          "rustix-1.1.6": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
@@ -1534,7 +1534,7 @@
               "no_std"
             ]
           },
-          "rustix-1.1.5": {
+          "rustix-1.1.6": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
@@ -1652,7 +1652,7 @@
               "no_std"
             ]
           },
-          "rustix-1.1.5": {
+          "rustix-1.1.6": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
@@ -1758,7 +1758,7 @@
       },
       "x86_64-apple-darwin": {
         "overrides": {
-          "rustix-1.1.5": {
+          "rustix-1.1.6": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
@@ -1845,7 +1845,7 @@
               "no_std"
             ]
           },
-          "rustix-1.1.5": {
+          "rustix-1.1.6": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
@@ -1963,7 +1963,7 @@
               "no_std"
             ]
           },
-          "rustix-1.1.5": {
+          "rustix-1.1.6": {
             "runtime_dependencies": [
               {
                 "name": "bitflags",
@@ -2164,11 +2164,17 @@
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
-    "itoa-1.0.18": {
+    "itoa-1.0.19": {
       "edition": "2021"
     },
-    "joeira-ratchet-0.1.13": {
-      "edition": "2024"
+    "joeira-ratchet-0.1.16": {
+      "edition": "2024",
+      "binaries": [
+        {
+          "name": "ratchet",
+          "path": "src/main.rs"
+        }
+      ]
     },
     "libc-0.2.191": {
       "edition": "2021",
@@ -2216,7 +2222,7 @@
     "regex-syntax-0.8.11": {
       "edition": "2021"
     },
-    "rustix-1.1.5": {
+    "rustix-1.1.6": {
       "edition": "2021",
       "build_script": "build.rs"
     },
@@ -2242,7 +2248,7 @@
     "serde_yaml_ng-0.10.0": {
       "edition": "2021"
     },
-    "skill-lint-0.1.14": {
+    "skill-lint-0.1.15": {
       "edition": "2024",
       "lib_target": {
         "name": "skill_lint",
@@ -2258,7 +2264,7 @@
     "strsim-0.11.1": {
       "edition": "2015"
     },
-    "syn-3.0.9": {
+    "syn-3.0.10": {
       "edition": "2021"
     },
     "tempfile-3.27.0": {
