@@ -16,7 +16,7 @@ pub struct MockSource {
     pub contents: BTreeMap<String, String>,
     /// Repositories simulated as present on this machine.
     pub repos: BTreeSet<String>,
-    /// Files simulated under the repo root, e.g. `theory/THEORY.md`.
+    /// Files simulated under the repo root, e.g. `manual/MANUAL.md`.
     pub repo_files: BTreeSet<PathBuf>,
     /// Files simulated under the skills root, e.g. `alpha/references/a.md`.
     pub skill_files: BTreeSet<PathBuf>,

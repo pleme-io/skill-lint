@@ -977,7 +977,7 @@ mod tests {
     /// GREEN. A compliant file must pass, or the gate is just noise.
     #[test]
     fn a_compliant_file_passes() {
-        let doc = index("- **★ Small — a rule.** See `theory/X.md`.\n\n- ★ Tiny — another.\n");
+        let doc = index("- **★ Small — a rule.** See `manual/X.md`.\n\n- ★ Tiny — another.\n");
         let source = MockDocSource::new().with("t/CLAUDE.md", &doc);
         let report = lint_all(&source, &ClaudeMdConfig::default(), Baseline::default()).unwrap();
         assert!(report.is_ok(), "compliant file failed: {:?}", report.errors);

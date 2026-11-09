@@ -77,7 +77,7 @@ pub trait SkillSource {
     /// them at all.
     ///
     /// `None` is the honest default: a source with no notion of a filesystem
-    /// cannot say whether `theory/THEORY.md` exists, and the path-resolution
+    /// cannot say whether `manual/MANUAL.md` exists, and the path-resolution
     /// check reports nothing rather than reporting everything as broken.
     /// Unknown is not absent.
     fn path_oracle(&self) -> Option<Box<dyn PathOracle>> { None }
@@ -739,14 +739,14 @@ mod tests {
     fn dead_repo_path_is_caught() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `theory/GHOST.md`")
-            .with_repo("theory");
+            .with_body("alpha", "canonical: `manual/GHOST.md`")
+            .with_repo("manual");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         let errs = report.errors_of(CheckKind::PathResolution);
         assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
         assert!(
             matches!(errs[0], LintError::UnresolvedPath { path, form, .. }
-                if path == "theory/GHOST.md" && *form == PathForm::RepoPath),
+                if path == "manual/GHOST.md" && *form == PathForm::RepoPath),
             "wrong finding: {:?}", errs[0]
         );
     }
@@ -756,8 +756,8 @@ mod tests {
     fn live_repo_path_passes() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `theory/THEORY.md`")
-            .with_repo_file("theory/THEORY.md");
+            .with_body("alpha", "canonical: `manual/MANUAL.md`")
+            .with_repo_file("manual/MANUAL.md");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
     }
@@ -781,9 +781,9 @@ mod tests {
     fn live_org_qualified_path_passes() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `pleme-io/theory/THEORY.md`")
+            .with_body("alpha", "canonical: `pleme-io/manual/MANUAL.md`")
             .with_org("pleme-io")
-            .with_repo_file("theory/THEORY.md");
+            .with_repo_file("manual/MANUAL.md");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
     }
@@ -797,15 +797,15 @@ mod tests {
     fn dead_org_qualified_path_is_caught() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `pleme-io/theory/GHOST.md`")
+            .with_body("alpha", "canonical: `pleme-io/manual/GHOST.md`")
             .with_org("pleme-io")
-            .with_repo("theory");
+            .with_repo("manual");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         let errs = report.errors_of(CheckKind::PathResolution);
         assert_eq!(errs.len(), 1, "expected exactly one, got {errs:?}");
         assert!(
             matches!(errs[0], LintError::UnresolvedPath { path, form, .. }
-                if path == "pleme-io/theory/GHOST.md" && *form == PathForm::RepoPath),
+                if path == "pleme-io/manual/GHOST.md" && *form == PathForm::RepoPath),
             "wrong finding: {:?}", errs[0]
         );
     }
@@ -822,10 +822,10 @@ mod tests {
     fn org_named_repo_does_not_break_org_qualified_paths() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `pleme-io/theory/THEORY.md`")
+            .with_body("alpha", "canonical: `pleme-io/manual/MANUAL.md`")
             .with_org("pleme-io")
             .with_repo("pleme-io") // the empty clone that collides with the org dir
-            .with_repo_file("theory/THEORY.md");
+            .with_repo_file("manual/MANUAL.md");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(
             report.errors_of(CheckKind::PathResolution).len(),
@@ -839,7 +839,7 @@ mod tests {
     fn org_qualified_path_into_an_uncloned_repo_is_never_reported() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `pleme-io/theory/GHOST.md`")
+            .with_body("alpha", "canonical: `pleme-io/manual/GHOST.md`")
             .with_org("pleme-io");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
@@ -855,7 +855,7 @@ mod tests {
     fn repo_path_into_an_uncloned_repo_is_never_reported() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "canonical: `theory/GHOST.md`");
+            .with_body("alpha", "canonical: `manual/GHOST.md`");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(
             report.errors_of(CheckKind::PathResolution).len(), 0,
@@ -881,8 +881,8 @@ mod tests {
     fn fenced_paths_are_out_of_scope() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "```\n`theory/GHOST.md`\n[x](./gone.md)\n```")
-            .with_repo("theory");
+            .with_body("alpha", "```\n`manual/GHOST.md`\n[x](./gone.md)\n```")
+            .with_repo("manual");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
     }
@@ -894,15 +894,15 @@ mod tests {
             .with_skill("alpha", "meta", &valid_fm("alpha"))
             .with_body(
                 "alpha",
-                "uses `theory/GHOST.md` and `theory/OTHER.md`\n\n\
-                 pending-path: theory/GHOST.md — lands with the next theory pass",
+                "uses `manual/GHOST.md` and `manual/OTHER.md`\n\n\
+                 pending-path: manual/GHOST.md — lands with the next manual pass",
             )
-            .with_repo("theory");
+            .with_repo("manual");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         let errs = report.errors_of(CheckKind::PathResolution);
         assert_eq!(errs.len(), 1, "waiver must not silence the whole skill: {errs:?}");
         assert!(
-            matches!(errs[0], LintError::UnresolvedPath { path, .. } if path == "theory/OTHER.md"),
+            matches!(errs[0], LintError::UnresolvedPath { path, .. } if path == "manual/OTHER.md"),
             "wrong survivor: {:?}", errs[0]
         );
     }
@@ -925,8 +925,8 @@ mod tests {
     fn a_repeated_dead_path_is_reported_once() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "`theory/GHOST.md` again `theory/GHOST.md` and `theory/GHOST.md`")
-            .with_repo("theory");
+            .with_body("alpha", "`manual/GHOST.md` again `manual/GHOST.md` and `manual/GHOST.md`")
+            .with_repo("manual");
         let report = check_all(&source, &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 1);
     }
@@ -935,8 +935,8 @@ mod tests {
     fn path_resolution_check_disabled() {
         let source = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "`theory/GHOST.md`")
-            .with_repo("theory");
+            .with_body("alpha", "`manual/GHOST.md`")
+            .with_repo("manual");
         let config = CheckConfig { path_resolution: false, ..CheckConfig::default() };
         let report = check_all(&source, &config).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
@@ -957,8 +957,8 @@ mod tests {
         }
         let inner = MockSource::new()
             .with_skill("alpha", "meta", &valid_fm("alpha"))
-            .with_body("alpha", "`theory/GHOST.md` and [x](./gone.md)")
-            .with_repo("theory");
+            .with_body("alpha", "`manual/GHOST.md` and [x](./gone.md)")
+            .with_repo("manual");
         let report = check_all(&Blind(inner), &CheckConfig::default()).unwrap();
         assert_eq!(report.errors_of(CheckKind::PathResolution).len(), 0);
         assert!(report.is_ok(), "errors: {:?}", report.errors);
@@ -973,20 +973,20 @@ mod tests {
 
         // <org>/blackmatter/.git         — the repo the skills live in
         // <org>/blackmatter/skills/alpha — the skill
-        // <org>/theory/THEORY.md         — a sibling repo with a real file
+        // <org>/manual/MANUAL.md         — a sibling repo with a real file
         let repo = org.path().join("blackmatter");
         let skills = repo.join("skills");
         let skill_dir = skills.join("alpha");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(repo.join(".git"), "gitdir: elsewhere\n").unwrap();
-        fs::create_dir_all(org.path().join("theory")).unwrap();
-        fs::write(org.path().join("theory").join("THEORY.md"), "# T\n").unwrap();
+        fs::create_dir_all(org.path().join("manual")).unwrap();
+        fs::write(org.path().join("manual").join("MANUAL.md"), "# T\n").unwrap();
         fs::write(skills.join("skill-map.yaml"),
             "version: \"1.0.0\"\nlastModified: \"2026-03-17\"\ndomains:\n  meta: [alpha]\nskills:\n  alpha:\n    description: A test\n    domain: meta\n    repo: test\n"
         ).unwrap();
 
-        let live = "see `theory/THEORY.md`";
-        let dead = "see `theory/THEORY.md` and `theory/GHOST.md` and [x](../beta/SKILL.md)";
+        let live = "see `manual/MANUAL.md`";
+        let dead = "see `manual/MANUAL.md` and `manual/GHOST.md` and [x](../beta/SKILL.md)";
 
         fs::write(skill_dir.join("SKILL.md"),
             format!("---\n{}\n---\n\n{live}\n", valid_fm("alpha"))).unwrap();
@@ -1000,7 +1000,7 @@ mod tests {
         let errs = red.errors_of(CheckKind::PathResolution);
         assert_eq!(errs.len(), 2, "expected the ghost and the bad link: {errs:?}");
         assert!(errs.iter().any(|e| matches!(e,
-            LintError::UnresolvedPath { path, .. } if path == "theory/GHOST.md")));
+            LintError::UnresolvedPath { path, .. } if path == "manual/GHOST.md")));
         assert!(errs.iter().any(|e| matches!(e,
             LintError::UnresolvedPath { path, .. } if path == "../beta/SKILL.md")));
     }

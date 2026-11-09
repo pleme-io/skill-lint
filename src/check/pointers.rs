@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn a_url_route_is_not_a_pointer() {
         assert!(refs("curl http://localhost:8090/org-root").is_empty());
-        assert!(refs("see ~/code/github/pleme-io/theory for the-storm").is_empty());
+        assert!(refs("see ~/code/github/pleme-io/manual for the-storm").is_empty());
     }
 
     /// The ambiguous tail, both ways: sentence punctuation reads, an extension

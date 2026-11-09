@@ -486,8 +486,8 @@ fn claudemd_passes_on_a_compliant_file() {
     let file = claude_md(
         dir.path(),
         "CLAUDE.md",
-        "- **★★ Thin — a rule.** Skill: `x`. Doc: `theory/X.md`.\n\n\
-         - ★ Also thin — another rule. Doc: `theory/Y.md`.\n",
+        "- **★★ Thin — a rule.** Skill: `x`. Doc: `manual/X.md`.\n\n\
+         - ★ Also thin — another rule. Doc: `manual/Y.md`.\n",
     );
 
     Command::cargo_bin("skill-lint")

@@ -393,10 +393,10 @@ mod tests {
 
     #[test]
     fn repo_paths_are_extracted_from_code_spans() {
-        let body = "read `theory/THEORY.md` then `mado/docs/MACRO-VOCABULARY.md`";
+        let body = "read `manual/MANUAL.md` then `mado/docs/MACRO-VOCABULARY.md`";
         assert_eq!(
             paths(body, PathForm::RepoPath),
-            ["theory/THEORY.md", "mado/docs/MACRO-VOCABULARY.md"]
+            ["manual/MANUAL.md", "mado/docs/MACRO-VOCABULARY.md"]
         );
     }
 
@@ -453,10 +453,10 @@ pending-path: live/one.md
     fn waivers_are_scoped_to_the_path_they_name() {
         let scan = scan_body(
             "pending-path: sui/sui-store/src/postgres.rs — unmerged branch\n\
-             pending-path: `theory/GHOST.md` — planned\n",
+             pending-path: `manual/GHOST.md` — planned\n",
         );
         assert!(scan.waived.contains("sui/sui-store/src/postgres.rs"));
-        assert!(scan.waived.contains("theory/GHOST.md"));
+        assert!(scan.waived.contains("manual/GHOST.md"));
         assert_eq!(scan.waived.len(), 2);
     }
 
